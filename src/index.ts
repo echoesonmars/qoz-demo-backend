@@ -1,19 +1,46 @@
 import Fastify from "fastify";
-import { getEnv } from "./config/env.js";
+import { getBootConfig } from "./config/env.js";
 import { registerCors } from "./plugins/cors.js";
 import { devicesFleetRoutes } from "./routes/devices-fleet.js";
 import { incidentsAnalyzeRoutes } from "./routes/incidents-analyze.js";
 import { liveRoutes } from "./routes/live.js";
 
-const app = Fastify({ logger: true });
+let apiReady = false;
 
-app.get("/health", async () => ({ ok: true }));
+async function main() {
+  const boot = getBootConfig();
+  if (boot.HOST === "127.0.0.1" || boot.HOST === "localhost") {
+    console.warn(
+      `[qoz-backend] HOST=${boot.HOST} blocks Railway healthchecks; use HOST=0.0.0.0`,
+    );
+  }
 
-await registerCors(app);
-await incidentsAnalyzeRoutes(app);
-await devicesFleetRoutes(app);
-await liveRoutes(app);
+  const app = Fastify({ logger: true });
 
-const env = getEnv();
-await app.listen({ port: env.PORT, host: env.HOST });
-app.log.info(`Qoz backend listening on ${env.HOST}:${env.PORT}`);
+  app.get("/health", async () => ({
+    ok: true,
+    ready: apiReady,
+  }));
+
+  try {
+    await registerCors(app);
+    await incidentsAnalyzeRoutes(app);
+    await devicesFleetRoutes(app);
+    await liveRoutes(app);
+    apiReady = true;
+    app.log.info("API routes registered");
+  } catch (err) {
+    app.log.error(
+      { err },
+      "API routes not registered — check DATABASE_URL, S3 keys, BACKEND_INTERNAL_SECRET (min 16 chars)",
+    );
+  }
+
+  await app.listen({ port: boot.PORT, host: boot.HOST });
+  app.log.info(`Qoz backend listening on ${boot.HOST}:${boot.PORT}`);
+}
+
+main().catch((err) => {
+  console.error("[qoz-backend] FATAL:", err instanceof Error ? err.message : err);
+  process.exit(1);
+});

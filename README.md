@@ -56,8 +56,10 @@ npm run dev
 ## Деплой Railway
 
 1. New Project → Deploy from repo `qoz-demo-backend`
-2. Variables из `.env.example`
-3. Public Networking → скопировать URL
+2. Variables из `.env.example` (обязательны: `DATABASE_URL`, `SUPABASE_S3_*`, `BACKEND_INTERNAL_SECRET` ≥16 символов)
+3. **Не задавайте** `HOST=localhost` — только `HOST=0.0.0.0` (в Docker уже по умолчанию)
+4. **Не задавайте** `PORT` вручную — Railway подставит свой; healthcheck бьёт в этот порт
+5. Public Networking → скопировать URL
 4. В `qoz-vision-demo`:
    - `BACKEND_URL=https://<railway-host>`
    - `BACKEND_INTERNAL_SECRET=...`

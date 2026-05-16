@@ -1,8 +1,13 @@
 import { z } from "zod";
 
+const bootSchema = z.object({
+  PORT: z.coerce.number().int().positive().default(8080),
+  HOST: z.string().min(1).default("0.0.0.0"),
+});
+
 const envSchema = z.object({
-  PORT: z.coerce.number().default(8080),
-  HOST: z.string().default("0.0.0.0"),
+  PORT: z.coerce.number().int().positive().default(8080),
+  HOST: z.string().min(1).default("0.0.0.0"),
   DATABASE_URL: z.string().min(1),
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_ANALYZE_MODEL: z.string().default("gemini-3.1-flash-lite"),
@@ -18,12 +23,27 @@ const envSchema = z.object({
 });
 
 export type Env = z.infer<typeof envSchema>;
+export type BootConfig = z.infer<typeof bootSchema>;
 
 let cached: Env | null = null;
 
+function formatZodError(error: z.ZodError): string {
+  return error.issues
+    .map((issue) => `  - ${issue.path.join(".") || "(root)"}: ${issue.message}`)
+    .join("\n");
+}
+
+export function getBootConfig(): BootConfig {
+  return bootSchema.parse(process.env);
+}
+
 export function getEnv(): Env {
   if (!cached) {
-    cached = envSchema.parse(process.env);
+    const result = envSchema.safeParse(process.env);
+    if (!result.success) {
+      throw new Error(`Invalid environment:\n${formatZodError(result.error)}`);
+    }
+    cached = result.data;
   }
   return cached;
 }
