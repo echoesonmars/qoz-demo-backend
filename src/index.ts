@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import { getBootConfig } from "./config/env.js";
 import { registerCors } from "./plugins/cors.js";
+import { agentChatRoutes } from "./routes/agent-chat.js";
 import { devicesFleetRoutes } from "./routes/devices-fleet.js";
 import { incidentsAnalyzeRoutes } from "./routes/incidents-analyze.js";
 import { liveRoutes } from "./routes/live.js";
@@ -24,6 +25,7 @@ async function main() {
 
   try {
     await registerCors(app);
+    await agentChatRoutes(app);
     await incidentsAnalyzeRoutes(app);
     await devicesFleetRoutes(app);
     await liveRoutes(app);
