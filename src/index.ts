@@ -4,6 +4,7 @@ import { registerCors } from "./plugins/cors.js";
 import { agentChatRoutes } from "./routes/agent-chat.js";
 import { devicesFleetRoutes } from "./routes/devices-fleet.js";
 import { incidentsAnalyzeRoutes } from "./routes/incidents-analyze.js";
+import { lessonsAnalyzeRoutes } from "./routes/lessons-analyze.js";
 import { liveRoutes } from "./routes/live.js";
 
 let apiReady = false;
@@ -27,6 +28,7 @@ async function main() {
     await registerCors(app);
     await agentChatRoutes(app);
     await incidentsAnalyzeRoutes(app);
+    await lessonsAnalyzeRoutes(app);
     await devicesFleetRoutes(app);
     await liveRoutes(app);
     apiReady = true;

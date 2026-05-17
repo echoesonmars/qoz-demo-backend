@@ -55,6 +55,45 @@ Base URL: `https://<railway-host>` (локально `http://localhost:8080`)
 
 ---
 
+## Анализ урока (Engagement)
+
+### `POST /api/lessons/analyze`
+
+Асинхронный анализ полной записи урока. Вызывается **только сервером Next.js**.
+
+**Headers**
+
+| Header | Значение |
+|--------|----------|
+| `Content-Type` | `application/json` |
+| `X-Backend-Secret` | `BACKEND_INTERNAL_SECRET` |
+
+**Body**
+
+```json
+{ "lessonId": "550e8400-e29b-41d4-a716-446655440000" }
+```
+
+**202 Accepted** (анализ запущен)
+
+```json
+{ "status": "processing", "lessonId": "..." }
+```
+
+**200 OK** (уже обработан или не в статусе `pending`)
+
+```json
+{ "status": "ok", "lesson": { "id": "...", "status": "ready", "analysis": { ... } } }
+```
+
+**Ошибки:** `401` секрет, `404` нет записи. При сбое Gemini запись в БД получает `status: failed` и `error_message`.
+
+Отчёт (`analysis` jsonb): `detected_language`, `lesson_overview`, `time_management`, `incidents_summary`, `timeline`. Язык текста определяется моделью по речи на видео (`kk` / `ru` / `en`).
+
+Опционально: `GEMINI_LESSON_ANALYZE_MODEL`, `GEMINI_LESSON_ANALYZE_FALLBACK_MODELS` (иначе используются `GEMINI_ANALYZE_*`).
+
+---
+
 ## Прямой эфир
 
 ### `WSS /api/live?deviceId=d1`
