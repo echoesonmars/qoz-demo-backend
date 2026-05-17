@@ -1,9 +1,6 @@
-export type IncidentCategory =
-  | "fight"
-  | "weapon"
-  | "smoking"
-  | "intruder"
-  | "pending";
+import type { IncidentCategoryId } from "../constants/incident-categories.js";
+
+export type IncidentCategory = IncidentCategoryId | "pending" | "intruder";
 
 export type IncidentRow = {
   id: string;
@@ -13,11 +10,11 @@ export type IncidentRow = {
   camera_label: string | null;
   description: string | null;
   confidence: number | null;
-  created_at: string;
+  created_at: Date | string;
 };
 
 export type AnalyzeResult = {
-  category: Exclude<IncidentCategory, "pending">;
+  category: IncidentCategoryId;
   confidence: number;
   description: string;
 };

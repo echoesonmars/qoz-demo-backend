@@ -1,5 +1,6 @@
 import type { WebSocket } from "ws";
 import { getEnv } from "../config/env.js";
+import { incidentLiveSystemPrompt } from "../prompts/incident-live.js";
 import { buildMockOverlay, recordLiveFrame } from "./fleet-registry.js";
 import type { StreamOverlayMessage } from "../types/overlay.js";
 
@@ -66,6 +67,9 @@ export function attachLiveSession(
           JSON.stringify({
             setup: {
               model: `models/${model}`,
+              systemInstruction: {
+                parts: [{ text: incidentLiveSystemPrompt }],
+              },
               generationConfig: { responseModalities: ["TEXT"] },
             },
           }),

@@ -1,11 +1,12 @@
 import { GoogleGenAI } from "@google/genai";
 import { z } from "zod";
 import { getEnv } from "../config/env.js";
+import { INCIDENT_CATEGORY_IDS } from "../constants/incident-categories.js";
 import { incidentAnalyzeSystemPrompt } from "../prompts/incident-analyze.js";
 import type { AnalyzeResult } from "../types/incidents.js";
 
 const analyzeSchema = z.object({
-  category: z.enum(["fight", "weapon", "smoking", "intruder"]),
+  category: z.enum(INCIDENT_CATEGORY_IDS),
   confidence: z.coerce.number().min(0).max(100),
   description: z.string().min(1).max(2000),
 });

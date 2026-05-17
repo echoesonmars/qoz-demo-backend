@@ -51,7 +51,7 @@ Base URL: `https://<railway-host>` (локально `http://localhost:8080`)
 
 **Ошибки:** `401` секрет, `404` нет записи, `502` Gemini/S3.
 
-**Категории после анализа:** `fight`, `weapon`, `smoking`, `intruder`.
+**Категории после анализа:** `fight`, `weapon`, `fall`, `smoking`, `phone_usage`, `sleep`, `lost_property`, `crowd`, `wanted_person`, `fence_climbing`, `anpr`, `fire`, `smoke`.
 
 ---
 
