@@ -1,22 +1,46 @@
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getEnv } from "../config/env.js";
+import { assertCanStartLiveSession, maxConcurrentLiveIngest } from "../services/live-concurrency.js";
+import { geminiLiveMaxConcurrent } from "../services/gemini-concurrency.js";
+import { checkLiveHealth } from "../services/live-health.js";
 import {
-  createMonitorSession,
-  getLatestLiveSnapshot,
-  getLatestSession,
-  getLiveFeed,
-  getLiveIncidentEvents,
-  getRunningSession,
-  stopMonitorSession,
-  ZOMBIE_MESSAGE,
-} from "../services/live-monitor-db.js";
-import {
+  baseCaptureIntervalMs,
+  captureIntervalMs,
+  countActiveIngests,
   getLastIngestError,
+  setCaptureIntervalOverride,
   startLiveIngest,
   stopLiveIngest,
   stopAllLiveIngests,
 } from "../services/live-hls-ingest.js";
+import { getLiveMetricsSnapshot } from "../services/live-metrics.js";
+import { assertLiveStartRateLimit } from "../services/live-rate-limit.js";
+import { pruneOldLiveData } from "../services/live-retention.js";
+import { insertLesson } from "../services/lessons-db.js";
+import {
+  createMonitorSession,
+  getLatestLiveSnapshot,
+  getLatestSession,
+  getLiveDashboard,
+  getLiveFeed,
+  getLiveIncidentEvents,
+  getRunningSession,
+  getSessionById,
+  listDeviceSessions,
+  listRunningSessions,
+  stopMonitorSession,
+  ZOMBIE_MESSAGE,
+} from "../services/live-monitor-db.js";
+import { finalizeSessionRecording } from "../services/live-session-finalize.js";
+import {
+  startSessionRecording,
+  stopAllSessionRecordings,
+} from "../services/live-session-recorder.js";
+import { copyStorageObject, presignIncidentVideo } from "../services/storage.js";
+import { runAnalysis } from "./lessons-analyze.js";
+import type { LiveIncidentEventRow, LiveMonitorSessionRow } from "../types/live-analysis.js";
 
 function checkSecret(header: unknown): boolean {
   return header === getEnv().BACKEND_INTERNAL_SECRET;
@@ -32,18 +56,7 @@ const deviceQuerySchema = z.object({
   deviceId: z.string().min(1),
 });
 
-function serializeSession(row: {
-  id: string;
-  device_id: string;
-  camera_id: string | null;
-  hls_url: string;
-  status: string;
-  started_at: Date;
-  stopped_at: Date | null;
-  frame_count: number;
-  last_frame_at: Date | null;
-  error_message: string | null;
-}) {
+function serializeSession(row: LiveMonitorSessionRow) {
   return {
     id: row.id,
     deviceId: row.device_id,
@@ -57,6 +70,11 @@ function serializeSession(row: {
     errorMessage: row.error_message,
     needsRestart: row.error_message === ZOMBIE_MESSAGE,
     lastIngestError: getLastIngestError(row.device_id),
+    recordingStoragePath: row.recording_storage_path,
+    recordingDurationSec: row.recording_duration_sec,
+    recordingBytes: row.recording_bytes,
+    recordingUploadStatus: row.recording_upload_status,
+    recordingUploadedAt: row.recording_uploaded_at?.toISOString() ?? null,
   };
 }
 
@@ -82,18 +100,18 @@ function serializeSnapshot(row: {
   };
 }
 
-function serializeIncident(row: {
-  id: string;
-  snapshot_id: string;
-  session_id: string;
-  device_id: string;
-  captured_at: Date;
-  incident_type: string;
-  confidence: string;
-  location_context: string | null;
-  description: string;
-  timestamp_marker: string | null;
-}) {
+async function serializeIncident(
+  row: LiveIncidentEventRow,
+  withSignedEvidence: boolean,
+) {
+  let evidenceUrl: string | null = null;
+  if (withSignedEvidence && row.evidence_storage_path) {
+    try {
+      evidenceUrl = await presignIncidentVideo(row.evidence_storage_path, 3600);
+    } catch {
+      evidenceUrl = null;
+    }
+  }
   return {
     id: row.id,
     snapshotId: row.snapshot_id,
@@ -105,12 +123,15 @@ function serializeIncident(row: {
     locationContext: row.location_context,
     description: row.description,
     timestampMarker: row.timestamp_marker,
+    evidenceStoragePath: row.evidence_storage_path,
+    evidenceUrl,
   };
 }
 
 export async function liveSessionsRoutes(app: FastifyInstance) {
   app.addHook("onClose", async () => {
     stopAllLiveIngests();
+    stopAllSessionRecordings();
   });
 
   app.post("/api/live/sessions/start", async (request, reply) => {
@@ -121,8 +142,25 @@ export async function liveSessionsRoutes(app: FastifyInstance) {
     if (!parsed.success) {
       return reply.code(400).send({ error: "Invalid body", details: parsed.error.flatten() });
     }
+    try {
+      await assertCanStartLiveSession();
+    } catch (e) {
+      return reply.code(429).send({
+        error: e instanceof Error ? e.message : "Limit reached",
+        maxConcurrent: maxConcurrentLiveIngest(),
+        activeIngests: countActiveIngests(),
+      });
+    }
     const { deviceId, cameraId, hlsUrl } = parsed.data;
+    try {
+      assertLiveStartRateLimit(deviceId);
+    } catch (e) {
+      return reply.code(429).send({
+        error: e instanceof Error ? e.message : "Rate limit",
+      });
+    }
     const session = await createMonitorSession({ deviceId, cameraId, hlsUrl });
+    startSessionRecording(session.id, hlsUrl);
     startLiveIngest(session, request.log);
     return reply.code(201).send({ session: serializeSession(session) });
   });
@@ -135,8 +173,12 @@ export async function liveSessionsRoutes(app: FastifyInstance) {
     if (!parsed.success) {
       return reply.code(400).send({ error: "Invalid body", details: parsed.error.flatten() });
     }
-    stopLiveIngest(parsed.data.deviceId);
-    const session = await stopMonitorSession(parsed.data.deviceId);
+    const deviceId = parsed.data.deviceId;
+    stopLiveIngest(deviceId);
+    const session = await stopMonitorSession(deviceId);
+    if (session) {
+      void finalizeSessionRecording(session.id, request.log);
+    }
     return reply.send({ session: session ? serializeSession(session) : null });
   });
 
@@ -151,6 +193,180 @@ export async function liveSessionsRoutes(app: FastifyInstance) {
       session: latest ? serializeSession(latest) : null,
       isMonitoring: Boolean(running),
     });
+  });
+
+  app.get("/api/live/sessions/list", async (request, reply) => {
+    const query = deviceQuerySchema.safeParse(request.query);
+    if (!query.success) {
+      return reply.code(400).send({ error: "deviceId required" });
+    }
+    const limit = Number((request.query as { limit?: string }).limit ?? 20);
+    const sessions = await listDeviceSessions(
+      query.data.deviceId,
+      Math.min(Math.max(limit, 1), 50),
+    );
+    return reply.send({ sessions: sessions.map(serializeSession) });
+  });
+
+  app.get("/api/live/fleet", async (_request, reply) => {
+    const running = await listRunningSessions();
+    const metrics = getLiveMetricsSnapshot();
+    return reply.send({
+      activeIngests: countActiveIngests(),
+      maxConcurrent: maxConcurrentLiveIngest(),
+      runningSessions: running.length,
+      captureIntervalMs: captureIntervalMs(),
+      baseCaptureIntervalMs: baseCaptureIntervalMs(),
+      geminiMaxConcurrent: geminiLiveMaxConcurrent(),
+      lastGemini429At: metrics.lastGemini429At,
+      lastFailStreakAlertAt: metrics.lastFailStreakAlertAt,
+    });
+  });
+
+  app.get("/api/live/metrics", async (request, reply) => {
+    if (!checkSecret(request.headers["x-backend-secret"])) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    return reply.send(getLiveMetricsSnapshot());
+  });
+
+  app.post("/api/live/admin/prune-retention", async (request, reply) => {
+    if (!checkSecret(request.headers["x-backend-secret"])) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    const result = await pruneOldLiveData();
+    return reply.send(result);
+  });
+
+  app.patch("/api/live/config", async (request, reply) => {
+    if (!checkSecret(request.headers["x-backend-secret"])) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    const parsed = configBodySchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "Invalid body" });
+    }
+    if (parsed.data.captureIntervalMs !== undefined) {
+      setCaptureIntervalOverride(parsed.data.captureIntervalMs);
+    }
+    return reply.send({
+      baseCaptureIntervalMs: baseCaptureIntervalMs(),
+      captureIntervalMs: captureIntervalMs(),
+    });
+  });
+
+  app.get("/api/live/dashboard/stream", async (request, reply) => {
+    if (!checkSecret(request.headers["x-backend-secret"])) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    const deviceId = (request.query as { deviceId?: string }).deviceId;
+    const sessionId = (request.query as { sessionId?: string }).sessionId ?? null;
+    if (!deviceId) {
+      return reply.code(400).send({ error: "deviceId required" });
+    }
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    const send = async () => {
+      const dash = await getLiveDashboard({
+        deviceId,
+        sessionId,
+        snapshotLimit: 50,
+        incidentLimit: 50,
+      });
+      const incidents = await Promise.all(
+        dash.incidents.map((row) => serializeIncident(row, true)),
+      );
+      const latest = dash.snapshots[0] ?? null;
+      const payload = JSON.stringify({
+        session: dash.session ? serializeSession(dash.session) : null,
+        isMonitoring: dash.isMonitoring,
+        snapshots: dash.snapshots.map(serializeSnapshot),
+        incidents,
+        latest: latest ? serializeSnapshot(latest) : null,
+      });
+      reply.raw.write(`data: ${payload}\n\n`);
+    };
+    await send();
+    const pollMs = Math.max(captureIntervalMs(), 12_000);
+    const timer = setInterval(() => {
+      void send().catch(() => {});
+    }, pollMs);
+    request.raw.on("close", () => clearInterval(timer));
+  });
+
+  app.get("/api/live/dashboard", async (request, reply) => {
+    const deviceId = (request.query as { deviceId?: string }).deviceId;
+    const sessionId = (request.query as { sessionId?: string }).sessionId ?? null;
+    const snapshotLimit = Number((request.query as { snapshotLimit?: string }).snapshotLimit ?? 50);
+    const incidentLimit = Number((request.query as { incidentLimit?: string }).incidentLimit ?? 50);
+    if (!deviceId) {
+      return reply.code(400).send({ error: "deviceId required" });
+    }
+    const dash = await getLiveDashboard({
+      deviceId,
+      sessionId,
+      snapshotLimit: Math.min(Math.max(snapshotLimit, 1), 200),
+      incidentLimit: Math.min(Math.max(incidentLimit, 1), 100),
+    });
+    const incidents = await Promise.all(
+      dash.incidents.map((row) => serializeIncident(row, true)),
+    );
+    const latest = dash.snapshots[0] ?? null;
+    return reply.send({
+      session: dash.session ? serializeSession(dash.session) : null,
+      isMonitoring: dash.isMonitoring,
+      snapshots: dash.snapshots.map(serializeSnapshot),
+      incidents,
+      latest: latest ? serializeSnapshot(latest) : null,
+    });
+  });
+
+  app.get("/api/live/sessions/recording-url", async (request, reply) => {
+    const sessionId = (request.query as { sessionId?: string }).sessionId;
+    if (!sessionId) {
+      return reply.code(400).send({ error: "sessionId required" });
+    }
+    const session = await getSessionById(sessionId);
+    if (!session?.recording_storage_path || session.recording_upload_status !== "ready") {
+      return reply.code(404).send({ error: "Recording not ready" });
+    }
+    const url = await presignIncidentVideo(session.recording_storage_path, 3600);
+    return reply.send({ url, sessionId });
+  });
+
+const exportBodySchema = z.object({
+  title: z.string().max(500).optional(),
+});
+
+const configBodySchema = z.object({
+  captureIntervalMs: z.number().int().min(10_000).max(120_000).nullable().optional(),
+});
+
+  app.post("/api/live/sessions/:sessionId/export-lesson", async (request, reply) => {
+    if (!checkSecret(request.headers["x-backend-secret"])) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    const sessionId = (request.params as { sessionId: string }).sessionId;
+    const parsed = exportBodySchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "Invalid body" });
+    }
+    const session = await getSessionById(sessionId);
+    if (!session?.recording_storage_path || session.recording_upload_status !== "ready") {
+      return reply.code(400).send({ error: "Запись сессии ещё не готова" });
+    }
+    const lessonPath = `lessons/${randomUUID()}.mp4`;
+    await copyStorageObject(session.recording_storage_path, lessonPath);
+    const lesson = await insertLesson({
+      storage_path: lessonPath,
+      title: parsed.data.title ?? `Live ${session.device_id}`,
+      source_live_session_id: sessionId,
+    });
+    void runAnalysis(lesson.id, request.log);
+    return reply.code(202).send({ lessonId: lesson.id, status: "processing" });
   });
 
   app.get("/api/live/feed", async (request, reply) => {
@@ -183,8 +399,7 @@ export async function liveSessionsRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "deviceId required" });
     }
     const events = await getLiveIncidentEvents(deviceId, Math.min(Math.max(limit, 1), 100));
-    return reply.send({
-      incidents: events.map(serializeIncident),
-    });
+    const incidents = await Promise.all(events.map((row) => serializeIncident(row, true)));
+    return reply.send({ incidents });
   });
 }

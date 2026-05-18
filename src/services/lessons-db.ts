@@ -73,3 +73,41 @@ export async function resetLessonPending(id: string): Promise<void> {
     where id = ${id}
   `;
 }
+
+export async function insertLesson(input: {
+  storage_path: string;
+  title?: string | null;
+  source_live_session_id?: string | null;
+}): Promise<LessonRow> {
+  const sql = getDb();
+  const [row] = await sql<LessonRow[]>`
+    insert into public.lesson_analyses (
+      status,
+      storage_path,
+      title,
+      source_live_session_id
+    )
+    values (
+      'pending',
+      ${input.storage_path},
+      ${input.title ?? null},
+      ${input.source_live_session_id ?? null}
+    )
+    returning
+      id,
+      status,
+      storage_path,
+      title,
+      detected_language,
+      analysis,
+      error_message,
+      created_at
+  `;
+  if (!row) {
+    throw new Error("insert lesson failed");
+  }
+  return {
+    ...row,
+    analysis: row.analysis as LessonAnalysisReport | null,
+  };
+}

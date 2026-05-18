@@ -28,6 +28,8 @@ export const liveAnalysisPayloadSchema = z.object({
 export type LiveAnalysisPayload = z.infer<typeof liveAnalysisPayloadSchema>;
 export type LiveDetectedIncident = z.infer<typeof liveDetectedIncidentSchema>;
 
+export type LiveRecordingUploadStatus = "pending" | "uploading" | "ready" | "failed";
+
 export type LiveMonitorSessionRow = {
   id: string;
   device_id: string;
@@ -39,6 +41,11 @@ export type LiveMonitorSessionRow = {
   frame_count: number;
   last_frame_at: Date | null;
   error_message: string | null;
+  recording_storage_path: string | null;
+  recording_duration_sec: number | null;
+  recording_bytes: number | null;
+  recording_upload_status: LiveRecordingUploadStatus | null;
+  recording_uploaded_at: Date | null;
 };
 
 export type LiveSnapshotRow = {
@@ -63,4 +70,5 @@ export type LiveIncidentEventRow = {
   location_context: string | null;
   description: string;
   timestamp_marker: string | null;
+  evidence_storage_path: string | null;
 };

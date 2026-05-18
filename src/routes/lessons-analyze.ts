@@ -13,7 +13,7 @@ const bodySchema = z.object({
   lessonId: z.string().uuid(),
 });
 
-async function runAnalysis(lessonId: string, log: FastifyBaseLogger): Promise<void> {
+export async function runAnalysis(lessonId: string, log: FastifyBaseLogger): Promise<void> {
   const lesson = await getLessonById(lessonId);
   if (!lesson) {
     log.warn({ lessonId }, "lesson analyze skipped: not found");

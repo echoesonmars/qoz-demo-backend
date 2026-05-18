@@ -9,8 +9,10 @@ import { lessonsAnalyzeRoutes } from "./routes/lessons-analyze.js";
 import { liveRoutes } from "./routes/live.js";
 import { liveSessionsRoutes } from "./routes/live-sessions.js";
 import { bootstrapLiveMonitoring } from "./services/live-session-bootstrap.js";
+import { checkLiveHealth } from "./services/live-health.js";
 
 let apiReady = false;
+let liveHealth: Awaited<ReturnType<typeof checkLiveHealth>> | null = null;
 
 async function main() {
   const boot = getBootConfig();
@@ -22,10 +24,20 @@ async function main() {
 
   const app = Fastify({ logger: true });
 
-  app.get("/health", async () => ({
-    ok: true,
-    ready: apiReady,
-  }));
+  app.get("/health", async () => {
+    if (apiReady && !liveHealth) {
+      liveHealth = await checkLiveHealth().catch(() => null);
+    }
+    const checks = liveHealth;
+    const allOk =
+      !checks ||
+      (checks.ffmpeg.ok && checks.storage.ok && checks.gemini.ok && checks.tmp.ok);
+    return {
+      ok: apiReady && allOk,
+      ready: apiReady,
+      live: checks,
+    };
+  });
 
   try {
     await registerCors(app);
