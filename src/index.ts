@@ -6,6 +6,8 @@ import { devicesFleetRoutes } from "./routes/devices-fleet.js";
 import { incidentsAnalyzeRoutes } from "./routes/incidents-analyze.js";
 import { lessonsAnalyzeRoutes } from "./routes/lessons-analyze.js";
 import { liveRoutes } from "./routes/live.js";
+import { liveSessionsRoutes } from "./routes/live-sessions.js";
+import { bootstrapLiveMonitoring } from "./services/live-session-bootstrap.js";
 
 let apiReady = false;
 
@@ -31,6 +33,8 @@ async function main() {
     await lessonsAnalyzeRoutes(app);
     await devicesFleetRoutes(app);
     await liveRoutes(app);
+    await liveSessionsRoutes(app);
+    await bootstrapLiveMonitoring(app.log);
     apiReady = true;
     app.log.info("API routes registered");
   } catch (err) {

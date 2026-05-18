@@ -94,7 +94,49 @@ Base URL: `https://<railway-host>` (локально `http://localhost:8080`)
 
 ---
 
-## Прямой эфир
+## Прямой эфир — серверный мониторинг
+
+Контракт анализа: full JSON из `analyze-video.md` (без bounding boxes). Снимки каждые ~10 с (env `LIVE_CAPTURE_INTERVAL_MS`, по умолчанию 10000).
+
+### `POST /api/live/sessions/start`
+
+**Headers:** `X-Backend-Secret`, `Content-Type: application/json`
+
+**Body**
+
+```json
+{
+  "deviceId": "cam-id-1",
+  "cameraId": "uuid-from-cameras-json",
+  "hlsUrl": "https://v-guard.kz/hls/camera_.../video1_stream.m3u8"
+}
+```
+
+**201** — `{ "session": { "id", "deviceId", "status": "running", "frameCount", ... } }`
+
+### `POST /api/live/sessions/stop`
+
+**Body:** `{ "deviceId": "..." }`
+
+### `GET /api/live/sessions?deviceId=`
+
+**200** — `{ "session": {...} | null, "isMonitoring": boolean }`
+
+### `GET /api/live/feed?deviceId=&limit=50`
+
+**200** — `{ "snapshots": [{ "id", "capturedAt", "payload", "engagementScore", ... }] }`
+
+### `GET /api/live/latest?deviceId=`
+
+### `GET /api/live/incidents?deviceId=&limit=30`
+
+**200** — `{ "incidents": [{ "type", "confidence", "description", "capturedAt", "snapshotId", ... }] }`
+
+После redeploy Railway все `running` сессии → `stopped` (`error_message`: перезапуск сервера).
+
+---
+
+## Прямой эфир — WebSocket (legacy / debug)
 
 ### `WSS /api/live?deviceId=d1`
 
