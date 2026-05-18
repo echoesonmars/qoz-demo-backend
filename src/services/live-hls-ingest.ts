@@ -1,7 +1,7 @@
 import type { FastifyBaseLogger } from "fastify";
 import { getEnv } from "../config/env.js";
 import { analyzeLiveFrame } from "./gemini-live-frame.js";
-import { captureHlsFrame } from "./live-hls-capture.js";
+import { captureHlsFrameWithRetry } from "./live-hls-capture.js";
 import { buildMockLiveAnalysis } from "./live-mock-analysis.js";
 import {
   insertLiveSnapshot,
@@ -60,7 +60,7 @@ async function runTick(
     if (shouldUseMock()) {
       payload = buildMockLiveAnalysis(handle.tick);
     } else {
-      const jpeg = await captureHlsFrame(session.hls_url, handle.abort.signal);
+      const jpeg = await captureHlsFrameWithRetry(session.hls_url, handle.abort.signal);
       const analyzed = await analyzeLiveFrame(jpeg);
       if (!analyzed) {
         handle.failStreak += 1;

@@ -17,6 +17,39 @@ export function resolveFfmpegPath(): string {
   return "ffmpeg";
 }
 
+function isTransientCaptureError(message: string): boolean {
+  return /Failed to resolve hostname|name resolution|Input\/output error|FFmpeg timeout|Connection refused|Connection timed out/i.test(
+    message,
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function captureHlsFrameWithRetry(
+  hlsUrl: string,
+  signal?: AbortSignal,
+  attempts = 4,
+): Promise<Buffer> {
+  let last: Error | null = null;
+  for (let i = 0; i < attempts; i++) {
+    if (signal?.aborted) {
+      throw new Error("Capture aborted");
+    }
+    try {
+      return await captureHlsFrame(hlsUrl, signal);
+    } catch (err) {
+      last = err instanceof Error ? err : new Error(String(err));
+      if (!isTransientCaptureError(last.message) || i === attempts - 1) {
+        throw last;
+      }
+      await sleep(2000 * (i + 1));
+    }
+  }
+  throw last ?? new Error("Capture failed");
+}
+
 export function captureHlsFrame(hlsUrl: string, signal?: AbortSignal): Promise<Buffer> {
   const ffmpeg = resolveFfmpegPath();
   return new Promise((resolve, reject) => {
