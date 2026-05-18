@@ -1,6 +1,7 @@
 import type { FastifyBaseLogger } from "fastify";
 import { getEnv } from "../config/env.js";
 import { analyzeLiveFrame } from "./gemini-live-frame.js";
+import { formatUserFacingGeminiError } from "./gemini-error-format.js";
 import { captureHlsFrameWithRetry } from "./live-hls-capture.js";
 import { buildMockLiveAnalysis } from "./live-mock-analysis.js";
 import {
@@ -98,7 +99,7 @@ async function runTick(
     );
   } catch (err) {
     handle.failStreak += 1;
-    const msg = err instanceof Error ? err.message : "Ingest failed";
+    const msg = formatUserFacingGeminiError(err);
     setIngestError(session.device_id, msg);
     log.warn({ err, sessionId: session.id }, "live tick failed");
     if (handle.failStreak >= MAX_CONSECUTIVE_FAILS) {

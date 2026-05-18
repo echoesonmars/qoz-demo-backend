@@ -12,6 +12,7 @@ const envSchema = z.object({
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_ANALYZE_MODEL: z.string().default("gemini-3.1-flash-lite"),
   GEMINI_LIVE_MODEL: z.string().default("gemini-3.1-flash-live-preview"),
+  GEMINI_LIVE_FRAME_MODEL: z.string().default("gemini-3.1-flash-lite"),
   GEMINI_LIVE_MODE: z.enum(["auto", "mock", "live"]).default("auto"),
   SUPABASE_S3_ACCESS_KEY_ID: z.string().min(1),
   SUPABASE_S3_SECRET_ACCESS_KEY: z.string().min(1),

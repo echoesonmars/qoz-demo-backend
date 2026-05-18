@@ -16,13 +16,13 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function analyzeModels(): string[] {
+function liveFrameAnalyzeModels(): string[] {
   const env = getEnv();
-  const fallbacks = (process.env.GEMINI_ANALYZE_FALLBACK_MODELS ?? "gemini-2.5-flash,gemini-2.0-flash")
+  const fallbacks = (process.env.GEMINI_LIVE_FRAME_FALLBACK_MODELS ?? "")
     .split(",")
     .map((m) => m.trim())
     .filter(Boolean);
-  return [...new Set([env.GEMINI_LIVE_MODEL, env.GEMINI_ANALYZE_MODEL, ...fallbacks])];
+  return [...new Set([env.GEMINI_LIVE_FRAME_MODEL, ...fallbacks])];
 }
 
 export async function analyzeLiveFrame(jpeg: Buffer): Promise<LiveAnalysisPayload | null> {
@@ -35,7 +35,7 @@ export async function analyzeLiveFrame(jpeg: Buffer): Promise<LiveAnalysisPayloa
   const base64 = jpeg.toString("base64");
   let lastError: unknown;
 
-  for (const model of analyzeModels()) {
+  for (const model of liveFrameAnalyzeModels()) {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const response = await ai.models.generateContent({
@@ -73,7 +73,8 @@ export async function analyzeLiveFrame(jpeg: Buffer): Promise<LiveAnalysisPayloa
   }
 
   if (lastError instanceof Error) {
-    throw lastError;
+    const models = liveFrameAnalyzeModels().join(", ");
+    throw new Error(`${lastError.message} (модели снимков: ${models})`);
   }
   return null;
 }
