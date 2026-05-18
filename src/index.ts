@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import { getBootConfig } from "./config/env.js";
 import { registerCors } from "./plugins/cors.js";
 import { agentChatRoutes } from "./routes/agent-chat.js";
+import { camerasInfrastructureRoutes } from "./routes/cameras-infrastructure.js";
 import { devicesFleetRoutes } from "./routes/devices-fleet.js";
 import { incidentsAnalyzeRoutes } from "./routes/incidents-analyze.js";
 import { lessonsAnalyzeRoutes } from "./routes/lessons-analyze.js";
@@ -32,6 +33,7 @@ async function main() {
     await incidentsAnalyzeRoutes(app);
     await lessonsAnalyzeRoutes(app);
     await devicesFleetRoutes(app);
+    await camerasInfrastructureRoutes(app);
     await liveRoutes(app);
     await liveSessionsRoutes(app);
     await bootstrapLiveMonitoring(app.log);
