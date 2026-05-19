@@ -4,7 +4,11 @@ import { buildFfmpegHlsInput } from "./live-hls-url.js";
 
 const require = createRequire(import.meta.url);
 
-const FFMPEG_TIMEOUT_MS = 28_000;
+function captureTimeoutMs(): number {
+  const raw = Number(process.env.LIVE_HLS_CAPTURE_TIMEOUT_MS ?? 45_000);
+  if (!Number.isFinite(raw) || raw < 15_000) return 45_000;
+  return Math.min(raw, 120_000);
+}
 
 export function resolveFfmpegPath(): string {
   const fromEnv = process.env.FFMPEG_PATH?.trim();
@@ -54,6 +58,7 @@ export async function captureHlsFrameWithRetry(
 export function captureHlsFrame(hlsUrl: string, signal?: AbortSignal): Promise<Buffer> {
   const ffmpeg = resolveFfmpegPath();
   const { preInputArgs, inputUrl } = buildFfmpegHlsInput(hlsUrl);
+  const timeoutMs = captureTimeoutMs();
   return new Promise((resolve, reject) => {
     const proc = spawn(
       ffmpeg,
@@ -63,6 +68,8 @@ export function captureHlsFrame(hlsUrl: string, signal?: AbortSignal): Promise<B
         "error",
         "-y",
         ...preInputArgs,
+        "-rw_timeout",
+        "15000000",
         "-i",
         inputUrl,
         "-vframes",
@@ -79,7 +86,7 @@ export function captureHlsFrame(hlsUrl: string, signal?: AbortSignal): Promise<B
     const timer = setTimeout(() => {
       proc.kill("SIGKILL");
       reject(new Error("FFmpeg timeout"));
-    }, FFMPEG_TIMEOUT_MS);
+    }, timeoutMs);
 
     const onAbort = () => {
       proc.kill("SIGKILL");
