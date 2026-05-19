@@ -1,10 +1,18 @@
 import type { FastifyBaseLogger } from "fastify";
 import { getDb } from "./db.js";
 
-const RETENTION_DAYS = Math.max(
+export const LIVE_RETENTION_DAYS = Math.max(
   1,
   Number.parseInt(process.env.LIVE_RETENTION_DAYS ?? "30", 10) || 30,
 );
+
+export function getLiveRetentionCutoff(sinceIso?: string | null): Date {
+  if (sinceIso) {
+    const parsed = Date.parse(sinceIso);
+    if (Number.isFinite(parsed)) return new Date(parsed);
+  }
+  return new Date(Date.now() - LIVE_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+}
 
 export async function pruneOldLiveData(): Promise<{
   snapshots: number;
@@ -12,7 +20,7 @@ export async function pruneOldLiveData(): Promise<{
   sessions: number;
 }> {
   const sql = getDb();
-  const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000);
+  const cutoff = getLiveRetentionCutoff();
   const inc = await sql<{ count: string }[]>`
     with deleted as (
       delete from public.live_incident_events
@@ -54,7 +62,7 @@ const CRON_HOURS = Math.max(
 export function startRetentionScheduler(log: FastifyBaseLogger): void {
   const run = () => {
     void pruneOldLiveData()
-      .then((r) => log.info({ ...r, retentionDays: RETENTION_DAYS }, "live retention pruned"))
+      .then((r) => log.info({ ...r, retentionDays: LIVE_RETENTION_DAYS }, "live retention pruned"))
       .catch((err) => log.warn({ err }, "live retention prune failed"));
   };
   run();
