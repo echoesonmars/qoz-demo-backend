@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
+import { buildFfmpegHlsInput } from "./live-hls-url.js";
 
 const require = createRequire(import.meta.url);
 
@@ -52,6 +53,7 @@ export async function captureHlsFrameWithRetry(
 
 export function captureHlsFrame(hlsUrl: string, signal?: AbortSignal): Promise<Buffer> {
   const ffmpeg = resolveFfmpegPath();
+  const { preInputArgs, inputUrl } = buildFfmpegHlsInput(hlsUrl);
   return new Promise((resolve, reject) => {
     const proc = spawn(
       ffmpeg,
@@ -60,8 +62,9 @@ export function captureHlsFrame(hlsUrl: string, signal?: AbortSignal): Promise<B
         "-loglevel",
         "error",
         "-y",
+        ...preInputArgs,
         "-i",
-        hlsUrl,
+        inputUrl,
         "-vframes",
         "1",
         "-f",

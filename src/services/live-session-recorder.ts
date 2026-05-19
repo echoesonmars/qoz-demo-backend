@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { resolveFfmpegPath } from "./live-hls-capture.js";
+import { buildFfmpegHlsInput } from "./live-hls-url.js";
 
 type RecorderHandle = {
   proc: ChildProcess;
@@ -23,14 +24,16 @@ export function startSessionRecording(sessionId: string, hlsUrl: string): void {
   stopSessionRecording(sessionId);
   const filePath = recordingFilePath(sessionId);
   const ffmpeg = resolveFfmpegPath();
+  const { preInputArgs, inputUrl } = buildFfmpegHlsInput(hlsUrl);
   const proc = spawn(
     ffmpeg,
     [
       "-hide_banner",
       "-loglevel",
       "error",
+      ...preInputArgs,
       "-i",
-      hlsUrl,
+      inputUrl,
       "-c",
       "copy",
       "-movflags",
