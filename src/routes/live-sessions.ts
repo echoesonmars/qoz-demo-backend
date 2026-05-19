@@ -1,10 +1,8 @@
-import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getEnv } from "../config/env.js";
 import { assertCanStartLiveSession, maxConcurrentLiveIngest } from "../services/live-concurrency.js";
 import { geminiLiveMaxConcurrent } from "../services/gemini-concurrency.js";
-import { checkLiveHealth } from "../services/live-health.js";
 import {
   baseCaptureIntervalMs,
   captureIntervalMs,
@@ -18,7 +16,6 @@ import {
 import { getLiveMetricsSnapshot } from "../services/live-metrics.js";
 import { assertLiveStartRateLimit } from "../services/live-rate-limit.js";
 import { pruneOldLiveData } from "../services/live-retention.js";
-import { insertLesson } from "../services/lessons-db.js";
 import {
   createMonitorSession,
   getLatestLiveSnapshot,
@@ -38,8 +35,8 @@ import {
   startSessionRecording,
   stopAllSessionRecordings,
 } from "../services/live-session-recorder.js";
-import { copyStorageObject, presignIncidentVideo } from "../services/storage.js";
-import { runAnalysis } from "./lessons-analyze.js";
+import { exportLiveSessionToLesson } from "../services/live-export-lesson.js";
+import { presignIncidentVideo } from "../services/storage.js";
 import type { LiveIncidentEventRow, LiveMonitorSessionRow } from "../types/live-analysis.js";
 
 function checkSecret(header: unknown): boolean {
@@ -354,19 +351,18 @@ const configBodySchema = z.object({
     if (!parsed.success) {
       return reply.code(400).send({ error: "Invalid body" });
     }
-    const session = await getSessionById(sessionId);
-    if (!session?.recording_storage_path || session.recording_upload_status !== "ready") {
-      return reply.code(400).send({ error: "Запись сессии ещё не готова" });
+    try {
+      const result = await exportLiveSessionToLesson(sessionId, request.log, {
+        title: parsed.data.title,
+      });
+      return reply.code(result.created ? 201 : 200).send({
+        lessonId: result.lessonId,
+        status: result.created ? "ready" : "exists",
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Export failed";
+      return reply.code(400).send({ error: msg });
     }
-    const lessonPath = `lessons/${randomUUID()}.mp4`;
-    await copyStorageObject(session.recording_storage_path, lessonPath);
-    const lesson = await insertLesson({
-      storage_path: lessonPath,
-      title: parsed.data.title ?? `Live ${session.device_id}`,
-      source_live_session_id: sessionId,
-    });
-    void runAnalysis(lesson.id, request.log);
-    return reply.code(202).send({ lessonId: lesson.id, status: "processing" });
   });
 
   app.get("/api/live/feed", async (request, reply) => {

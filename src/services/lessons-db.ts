@@ -3,7 +3,7 @@ import type { LessonAnalysisReport, LessonRow } from "../types/lessons.js";
 
 export async function getLessonById(id: string): Promise<LessonRow | null> {
   const sql = getDb();
-  const [row] = await sql<LessonRow[]>`
+  const [row] = await sql<(LessonRow & { source_live_session_id: string | null })[]>`
     select
       id,
       status,
@@ -12,7 +12,8 @@ export async function getLessonById(id: string): Promise<LessonRow | null> {
       detected_language,
       analysis,
       error_message,
-      created_at
+      created_at,
+      source_live_session_id
     from public.lesson_analyses
     where id = ${id}
     limit 1
@@ -74,24 +75,44 @@ export async function resetLessonPending(id: string): Promise<void> {
   `;
 }
 
+export async function repairLiveArchiveLesson(
+  id: string,
+  title: string,
+): Promise<void> {
+  const sql = getDb();
+  await sql`
+    update public.lesson_analyses
+    set
+      status = 'ready',
+      error_message = null,
+      title = ${title}
+    where id = ${id}
+      and source_live_session_id is not null
+  `;
+}
+
 export async function insertLesson(input: {
   storage_path: string;
   title?: string | null;
   source_live_session_id?: string | null;
+  status?: "pending" | "ready";
 }): Promise<LessonRow> {
   const sql = getDb();
+  const status = input.status ?? "pending";
   const [row] = await sql<LessonRow[]>`
     insert into public.lesson_analyses (
       status,
       storage_path,
       title,
-      source_live_session_id
+      source_live_session_id,
+      error_message
     )
     values (
-      'pending',
+      ${status},
       ${input.storage_path},
       ${input.title ?? null},
-      ${input.source_live_session_id ?? null}
+      ${input.source_live_session_id ?? null},
+      null
     )
     returning
       id,

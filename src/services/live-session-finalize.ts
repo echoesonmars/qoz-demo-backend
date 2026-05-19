@@ -5,6 +5,10 @@ import {
   updateSessionRecording,
 } from "./live-monitor-db.js";
 import { recordingFilePath, stopSessionRecording } from "./live-session-recorder.js";
+import {
+  autoExportLessonOnStop,
+  exportLiveSessionToLesson,
+} from "./live-export-lesson.js";
 import { uploadStorageFile } from "./storage.js";
 
 export async function finalizeSessionRecording(
@@ -54,6 +58,13 @@ export async function finalizeSessionRecording(
       uploadStatus: "ready",
     });
     log.info({ sessionId, bytes, storagePath }, "live recording uploaded");
+    if (autoExportLessonOnStop()) {
+      try {
+        await exportLiveSessionToLesson(sessionId, log);
+      } catch (exportErr) {
+        log.warn({ err: exportErr, sessionId }, "auto export to lesson archive failed");
+      }
+    }
   } catch (err) {
     log.error({ err, sessionId }, "live recording upload failed");
     await updateSessionRecording({

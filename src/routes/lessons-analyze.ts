@@ -23,6 +23,10 @@ export async function runAnalysis(lessonId: string, log: FastifyBaseLogger): Pro
     log.info({ lessonId, status: lesson.status }, "lesson analyze skipped: not pending");
     return;
   }
+  if (lesson.source_live_session_id) {
+    log.info({ lessonId }, "lesson analyze skipped: live archive");
+    return;
+  }
   try {
     const videoUrl = await presignIncidentVideo(lesson.storage_path, 3600);
     log.info({ lessonId }, "lesson analyze started");
@@ -53,6 +57,9 @@ export async function lessonsAnalyzeRoutes(app: FastifyInstance) {
     const lesson = await getLessonById(lessonId);
     if (!lesson) {
       return reply.code(404).send({ error: "Lesson not found" });
+    }
+    if (lesson.source_live_session_id) {
+      return reply.send({ status: "ok", lesson, skipped: "live_archive" });
     }
     if (lesson.status !== "pending") {
       return reply.send({ status: "ok", lesson });

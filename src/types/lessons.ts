@@ -46,4 +46,5 @@ export type LessonRow = {
   analysis: LessonAnalysisReport | null;
   error_message: string | null;
   created_at: Date | string;
+  source_live_session_id?: string | null;
 };
