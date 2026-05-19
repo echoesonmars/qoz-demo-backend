@@ -92,3 +92,17 @@ export function stopAllSessionRecordings(): void {
 export function countActiveRecorders(): number {
   return recorders.size;
 }
+
+export function pruneOrphanRecorders(runningSessionIds: ReadonlySet<string>): number {
+  let removed = 0;
+  for (const sessionId of [...recorders.keys()]) {
+    if (runningSessionIds.has(sessionId)) continue;
+    const handle = recorders.get(sessionId);
+    if (handle) {
+      handle.proc.kill("SIGKILL");
+      recorders.delete(sessionId);
+      removed += 1;
+    }
+  }
+  return removed;
+}

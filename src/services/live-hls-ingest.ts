@@ -12,6 +12,7 @@ import {
   touchMonitorSessionFrame,
 } from "./live-monitor-db.js";
 import type { LiveMonitorSessionRow } from "../types/live-analysis.js";
+import { stopSessionRecording } from "./live-session-recorder.js";
 
 const DEFAULT_INTERVAL_MS = 10_000;
 const MAX_CONSECUTIVE_FAILS = 5;
@@ -195,11 +196,13 @@ export function startLiveIngest(
 export function stopLiveIngest(deviceId: string): void {
   const handle = activeIngests.get(deviceId);
   if (!handle) return;
+  const sessionId = handle.session.id;
   clearInterval(handle.timer);
   handle.abort.abort();
   activeIngests.delete(deviceId);
   lastIngestErrors.delete(deviceId);
   rescheduleAllIngestTimers();
+  void stopSessionRecording(sessionId).catch(() => {});
 }
 
 export function stopAllLiveIngests(): void {
