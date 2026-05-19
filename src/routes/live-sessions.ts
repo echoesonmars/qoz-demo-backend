@@ -36,6 +36,13 @@ import {
   stopAllSessionRecordings,
 } from "../services/live-session-recorder.js";
 import { exportLiveSessionToLesson } from "../services/live-export-lesson.js";
+import {
+  getFleetSituationSummary,
+  listFleetIncidentsForCategory,
+  type FleetIncidentWithSession,
+} from "../services/live-fleet-situations.js";
+import { getLiveRetentionCutoff } from "../services/live-retention.js";
+import { isIncidentCategoryId } from "../constants/incident-categories.js";
 import { presignIncidentVideo } from "../services/storage.js";
 import type { LiveIncidentEventRow, LiveMonitorSessionRow } from "../types/live-analysis.js";
 
@@ -122,6 +129,14 @@ async function serializeIncident(
     timestampMarker: row.timestamp_marker,
     evidenceStoragePath: row.evidence_storage_path,
     evidenceUrl,
+  };
+}
+
+async function serializeFleetIncident(row: FleetIncidentWithSession) {
+  const base = await serializeIncident(row, true);
+  return {
+    ...base,
+    sessionStatus: row.session_status,
   };
 }
 
@@ -217,6 +232,48 @@ export async function liveSessionsRoutes(app: FastifyInstance) {
       geminiMaxConcurrent: geminiLiveMaxConcurrent(),
       lastGemini429At: metrics.lastGemini429At,
       lastFailStreakAlertAt: metrics.lastFailStreakAlertAt,
+    });
+  });
+
+  app.get("/api/live/fleet/situations/summary", async (request, reply) => {
+    const sinceParam = (request.query as { since?: string }).since ?? null;
+    const since = getLiveRetentionCutoff(sinceParam);
+    const summary = await getFleetSituationSummary(since);
+    return reply.send(summary);
+  });
+
+  app.get("/api/live/fleet/situations", async (request, reply) => {
+    const q = request.query as {
+      category?: string;
+      limit?: string;
+      offset?: string;
+      since?: string;
+    };
+    const category = q.category ?? "";
+    if (!isIncidentCategoryId(category)) {
+      return reply.code(400).send({ error: "category required" });
+    }
+    const since = getLiveRetentionCutoff(q.since ?? null);
+    const limit = Math.min(Math.max(Number(q.limit ?? 40), 1), 100);
+    const offset = Math.max(Number(q.offset ?? 0), 0);
+    const summary = await getFleetSituationSummary(since);
+    const stat = summary.stats.find((s) => s.category === category);
+    const total = stat?.count ?? 0;
+    const { rows, hasMore } = await listFleetIncidentsForCategory({
+      since,
+      category,
+      limit,
+      offset,
+    });
+    const incidents = await Promise.all(rows.map((row) => serializeFleetIncident(row)));
+    return reply.send({
+      incidents,
+      total,
+      limit,
+      offset,
+      hasMore,
+      since: since.toISOString(),
+      retentionDays: summary.retentionDays,
     });
   });
 
