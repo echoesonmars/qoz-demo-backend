@@ -3,10 +3,8 @@ export type FfmpegHlsInput = {
   inputUrl: string;
 };
 
-const DEFAULT_HLS_RESOLVE: [string, string][] = [["v-guard.kz", "38.107.235.151"]];
-
 function parseResolveMap(): Map<string, string> {
-  const map = new Map<string, string>(DEFAULT_HLS_RESOLVE);
+  const map = new Map<string, string>();
   const raw = process.env.LIVE_HLS_RESOLVE?.trim();
   if (!raw) return map;
   for (const part of raw.split(",")) {
