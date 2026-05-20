@@ -11,6 +11,7 @@ import {
   getLastIngestError,
   liveSnapshotEvidenceEnabled,
   setCaptureIntervalOverride,
+  hasLiveIngest,
   startLiveIngest,
   stopLiveIngest,
   stopAllLiveIngests,
@@ -278,6 +279,25 @@ export async function liveSessionsRoutes(app: FastifyInstance) {
     if (!parsed.success) {
       return reply.code(400).send({ error: "Invalid body", details: parsed.error.flatten() });
     }
+    const { deviceId, cameraId, hlsUrl } = parsed.data;
+    const existing = await getRunningSession(deviceId);
+    if (
+      existing &&
+      existing.camera_id === cameraId &&
+      existing.hls_url === hlsUrl
+    ) {
+      const env = getEnv();
+      if (env.VISION_LIVE_DRIVER === "on") {
+        void notifyVisionLiveDriverStart(existing, request.log).catch(() => {});
+        return reply.code(200).send({ session: serializeSession(existing) });
+      }
+      if (hasLiveIngest(deviceId)) {
+        return reply.code(200).send({ session: serializeSession(existing) });
+      }
+      startSessionRecording(existing.id, hlsUrl);
+      startLiveIngest(existing, request.log);
+      return reply.code(200).send({ session: serializeSession(existing) });
+    }
     try {
       await assertCanStartLiveSession();
     } catch (e) {
@@ -287,7 +307,6 @@ export async function liveSessionsRoutes(app: FastifyInstance) {
         activeIngests: countActiveIngests(),
       });
     }
-    const { deviceId, cameraId, hlsUrl } = parsed.data;
     try {
       assertLiveStartRateLimit(deviceId);
     } catch (e) {

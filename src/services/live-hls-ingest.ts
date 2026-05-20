@@ -40,6 +40,10 @@ export function countActiveIngests(): number {
   return activeIngests.size;
 }
 
+export function hasLiveIngest(deviceId: string): boolean {
+  return activeIngests.has(deviceId);
+}
+
 function setIngestError(deviceId: string, message: string | null): void {
   if (message) lastIngestErrors.set(deviceId, message);
   else lastIngestErrors.delete(deviceId);
