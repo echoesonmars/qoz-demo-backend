@@ -191,6 +191,12 @@ Base URL: `https://<railway-host>` (локально `http://localhost:8080`)
 
 ---
 
+## qoz-vision (отдельный процесс, план A)
+
+В этом репозитории нет HTTP-маршрута для анализа кадра: бэкенд при включённом `VISION_LIVE_MODE` POSTит JPEG на `{VISION_LIVE_URL}/api/analyze/frame` (см. репозиторий `qoz-vision`). Контракт сырого DTO и границы: [VISION_LIVE_PLAN_A_SCOPE.md](./VISION_LIVE_PLAN_A_SCOPE.md), интеграция и переменные: [VISION_LIVE.md](./VISION_LIVE.md), `VISION_*` в `.env.example`.
+
+---
+
 ## CORS
 
 Разрешённые origin задаются в `ALLOWED_ORIGINS` (через запятую).

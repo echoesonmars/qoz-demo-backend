@@ -1,4 +1,5 @@
 import type { FastifyBaseLogger } from "fastify";
+import { getEnv } from "../config/env.js";
 import { maxConcurrentLiveIngest } from "./live-concurrency.js";
 import { startLiveIngest, stopAllLiveIngests } from "./live-hls-ingest.js";
 import {
@@ -11,6 +12,7 @@ import {
   startSessionRecording,
   stopAllSessionRecordings,
 } from "./live-session-recorder.js";
+import { notifyVisionLiveDriverStart, stopAllVisionLiveDrivers } from "./vision-live-driver.js";
 
 function resumeOnBootEnabled(): boolean {
   const raw = process.env.LIVE_RESUME_ON_BOOT?.trim().toLowerCase();
@@ -20,6 +22,7 @@ function resumeOnBootEnabled(): boolean {
 
 export async function bootstrapLiveMonitoring(log: FastifyBaseLogger): Promise<void> {
   try {
+    await stopAllVisionLiveDrivers(log);
     stopAllLiveIngests();
     stopAllSessionRecordings();
 
@@ -30,11 +33,16 @@ export async function bootstrapLiveMonitoring(log: FastifyBaseLogger): Promise<v
       );
       const limit = maxConcurrentLiveIngest();
       let resumed = 0;
+      const env = getEnv();
       for (let i = 0; i < running.length; i += 1) {
         const session = running[i]!;
         if (i < limit) {
           startSessionRecording(session.id, session.hls_url);
-          startLiveIngest(session, log);
+          if (env.VISION_LIVE_DRIVER === "on") {
+            void notifyVisionLiveDriverStart(session, log).catch(() => {});
+          } else {
+            startLiveIngest(session, log);
+          }
           resumed += 1;
         } else {
           await setMonitorSessionZombieOnBoot(session.id);

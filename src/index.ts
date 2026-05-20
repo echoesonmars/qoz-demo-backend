@@ -1,5 +1,5 @@
 import Fastify from "fastify";
-import { getBootConfig } from "./config/env.js";
+import { getBootConfig, getEnv } from "./config/env.js";
 import { registerCors } from "./plugins/cors.js";
 import { agentChatRoutes } from "./routes/agent-chat.js";
 import { camerasInfrastructureRoutes } from "./routes/cameras-infrastructure.js";
@@ -29,9 +29,17 @@ async function main() {
       liveHealth = await checkLiveHealth().catch(() => null);
     }
     const checks = liveHealth;
-    const allOk =
-      !checks ||
-      (checks.ffmpeg.ok && checks.storage.ok && checks.gemini.ok && checks.tmp.ok);
+    const env = getEnv();
+    const liveNeedsVisionHealthy =
+      env.VISION_LIVE_MODE === "live" || env.VISION_LIVE_DRIVER === "on";
+    const coreOk =
+      checks &&
+      checks.ffmpeg.ok &&
+      checks.storage.ok &&
+      checks.tmp.ok &&
+      checks.gemini.ok &&
+      (!liveNeedsVisionHealthy || checks.vision.ok);
+    const allOk = !checks || Boolean(coreOk);
     return {
       ok: apiReady && allOk,
       ready: apiReady,

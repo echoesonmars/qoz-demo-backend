@@ -3,17 +3,20 @@ import { z } from "zod";
 import { getEnv } from "../config/env.js";
 import { assertCanStartLiveSession, maxConcurrentLiveIngest } from "../services/live-concurrency.js";
 import { geminiLiveMaxConcurrent } from "../services/gemini-concurrency.js";
+import { visionLiveMaxConcurrent } from "../services/vision-concurrency.js";
 import {
   baseCaptureIntervalMs,
   captureIntervalMs,
   countActiveIngests,
   getLastIngestError,
+  liveSnapshotEvidenceEnabled,
   setCaptureIntervalOverride,
   startLiveIngest,
   stopLiveIngest,
   stopAllLiveIngests,
 } from "../services/live-hls-ingest.js";
-import { getLiveMetricsSnapshot } from "../services/live-metrics.js";
+import { getLiveMetricsSnapshot, recordIngestTick } from "../services/live-metrics.js";
+import { liveCaptureIntervalMinFloorMs } from "../services/live-capture-interval-bounds.js";
 import { assertLiveStartRateLimit } from "../services/live-rate-limit.js";
 import { pruneOldLiveData } from "../services/live-retention.js";
 import {
@@ -25,17 +28,20 @@ import {
   getLiveIncidentEvents,
   getRunningSession,
   getSessionById,
+  insertLiveSnapshot,
   listDeviceSessions,
   listRunningSessions,
   stopMonitorSession,
+  touchMonitorSessionFrame,
   ZOMBIE_MESSAGE,
 } from "../services/live-monitor-db.js";
 import { finalizeSessionRecording } from "../services/live-session-finalize.js";
+import { exportLiveSessionToLesson } from "../services/live-export-lesson.js";
 import {
   startSessionRecording,
   stopAllSessionRecordings,
 } from "../services/live-session-recorder.js";
-import { exportLiveSessionToLesson } from "../services/live-export-lesson.js";
+import { assertJpegWithinLimit } from "../services/live-upload-limits.js";
 import {
   getFleetSituationSummary,
   listFleetIncidentsForCategory,
@@ -43,8 +49,24 @@ import {
 } from "../services/live-fleet-situations.js";
 import { getLiveRetentionCutoff } from "../services/live-retention.js";
 import { isIncidentCategoryId } from "../constants/incident-categories.js";
+import {
+  notifyVisionLiveDriverStart,
+  notifyVisionLiveDriverStop,
+  stopAllVisionLiveDrivers,
+  isVisionLiveDriverDevice,
+} from "../services/vision-live-driver.js";
+import { mapVisionDtoToLivePayload } from "../services/vision-map-live-payload.js";
 import { presignIncidentVideo } from "../services/storage.js";
 import type { LiveIncidentEventRow, LiveMonitorSessionRow } from "../types/live-analysis.js";
+import { visionFrameAnalysisDtoSchema } from "../types/vision-frame-dto.js";
+
+const visionIngestSnapshotBodySchema = z.object({
+  sessionId: z.string().min(1),
+  deviceId: z.string().min(1),
+  sessionOffsetSec: z.number().int().min(0),
+  dto: visionFrameAnalysisDtoSchema,
+  frameJpegBase64: z.string().min(1).optional(),
+});
 
 function checkSecret(header: unknown): boolean {
   return header === getEnv().BACKEND_INTERNAL_SECRET;
@@ -79,6 +101,7 @@ function serializeSession(row: LiveMonitorSessionRow) {
     recordingBytes: row.recording_bytes,
     recordingUploadStatus: row.recording_upload_status,
     recordingUploadedAt: row.recording_uploaded_at?.toISOString() ?? null,
+    driverVisionIngest: isVisionLiveDriverDevice(row.device_id),
   };
 }
 
@@ -142,8 +165,109 @@ async function serializeFleetIncident(row: FleetIncidentWithSession) {
 
 export async function liveSessionsRoutes(app: FastifyInstance) {
   app.addHook("onClose", async () => {
+    await stopAllVisionLiveDrivers(app.log);
     stopAllLiveIngests();
     stopAllSessionRecordings();
+  });
+
+  const exportBodySchema = z.object({
+    title: z.string().max(500).optional(),
+  });
+
+  const configBodySchema = z
+    .object({
+      captureIntervalMs: z.number().int().max(120_000).nullable().optional(),
+    })
+    .superRefine((body, ctx) => {
+      if (body.captureIntervalMs != null) {
+        const floor = liveCaptureIntervalMinFloorMs();
+        if (body.captureIntervalMs < floor) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `captureIntervalMs must be >= ${floor}`,
+            path: ["captureIntervalMs"],
+          });
+        }
+      }
+    });
+
+  app.post("/api/live/internal/vision-ingest/snapshot", async (request, reply) => {
+    if (!checkSecret(request.headers["x-backend-secret"])) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    const parsed = visionIngestSnapshotBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "Invalid body", details: parsed.error.flatten() });
+    }
+    const session = await getSessionById(parsed.data.sessionId);
+    if (
+      !session ||
+      session.device_id !== parsed.data.deviceId ||
+      session.status !== "running"
+    ) {
+      return reply.code(409).send({ error: "Session not active" });
+    }
+    let frameJpeg: Buffer | null = null;
+    const b64 = parsed.data.frameJpegBase64;
+    if (b64) {
+      try {
+        frameJpeg = Buffer.from(b64, "base64");
+      } catch {
+        return reply.code(400).send({ error: "Invalid base64" });
+      }
+      if (!frameJpeg.length) {
+        frameJpeg = null;
+      } else {
+        try {
+          assertJpegWithinLimit(frameJpeg);
+        } catch (e) {
+          return reply.code(413).send({
+            error: e instanceof Error ? e.message : "JPEG too large",
+          });
+        }
+      }
+    }
+    let payload;
+    try {
+      payload = mapVisionDtoToLivePayload(parsed.data.dto);
+    } catch (e) {
+      return reply.code(400).send({
+        error: e instanceof Error ? e.message : "vision map failed",
+      });
+    }
+    const t0 = Date.now();
+    try {
+      await insertLiveSnapshot({
+        sessionId: session.id,
+        deviceId: session.device_id,
+        payload,
+        sessionOffsetSec: parsed.data.sessionOffsetSec,
+        frameJpeg,
+        uploadEvidence: liveSnapshotEvidenceEnabled(),
+      });
+      await touchMonitorSessionFrame(session.id);
+    } catch (e) {
+      request.log.warn({ err: e }, "vision-ingest snapshot failed");
+      return reply.code(500).send({
+        error: e instanceof Error ? e.message : "persist failed",
+      });
+    }
+    recordIngestTick({
+      deviceId: session.device_id,
+      sessionId: session.id,
+      durationMs: Date.now() - t0,
+      failStreak: 0,
+      analysisSource: "vision",
+    });
+    request.log.info(
+      {
+        sessionId: session.id,
+        deviceId: session.device_id,
+        sessionOffsetSec: parsed.data.sessionOffsetSec,
+      },
+      "live snapshot from vision driver",
+    );
+    return reply.code(201).send({ ok: true });
   });
 
   app.post("/api/live/sessions/start", async (request, reply) => {
@@ -173,7 +297,12 @@ export async function liveSessionsRoutes(app: FastifyInstance) {
     }
     const session = await createMonitorSession({ deviceId, cameraId, hlsUrl });
     startSessionRecording(session.id, hlsUrl);
-    startLiveIngest(session, request.log);
+    const env = getEnv();
+    if (env.VISION_LIVE_DRIVER === "on") {
+      void notifyVisionLiveDriverStart(session, request.log).catch(() => {});
+    } else {
+      startLiveIngest(session, request.log);
+    }
     return reply.code(201).send({ session: serializeSession(session) });
   });
 
@@ -186,6 +315,7 @@ export async function liveSessionsRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "Invalid body", details: parsed.error.flatten() });
     }
     const deviceId = parsed.data.deviceId;
+    await notifyVisionLiveDriverStop(deviceId, request.log);
     stopLiveIngest(deviceId);
     const session = await stopMonitorSession(deviceId);
     if (session) {
@@ -229,9 +359,12 @@ export async function liveSessionsRoutes(app: FastifyInstance) {
       runningSessions: running.length,
       captureIntervalMs: captureIntervalMs(),
       baseCaptureIntervalMs: baseCaptureIntervalMs(),
+      captureIntervalMinFloorMs: liveCaptureIntervalMinFloorMs(),
       geminiMaxConcurrent: geminiLiveMaxConcurrent(),
+      visionMaxConcurrent: visionLiveMaxConcurrent(),
       lastGemini429At: metrics.lastGemini429At,
       lastFailStreakAlertAt: metrics.lastFailStreakAlertAt,
+      lastVisionHttpErrorAt: metrics.lastVisionHttpErrorAt,
     });
   });
 
@@ -306,6 +439,7 @@ export async function liveSessionsRoutes(app: FastifyInstance) {
     return reply.send({
       baseCaptureIntervalMs: baseCaptureIntervalMs(),
       captureIntervalMs: captureIntervalMs(),
+      captureIntervalMinFloorMs: liveCaptureIntervalMinFloorMs(),
     });
   });
 
@@ -344,7 +478,7 @@ export async function liveSessionsRoutes(app: FastifyInstance) {
       reply.raw.write(`data: ${payload}\n\n`);
     };
     await send();
-    const pollMs = Math.max(captureIntervalMs(), 12_000);
+    const pollMs = Math.min(6_000, Math.max(captureIntervalMs(), 400));
     const timer = setInterval(() => {
       void send().catch(() => {});
     }, pollMs);
@@ -390,14 +524,6 @@ export async function liveSessionsRoutes(app: FastifyInstance) {
     const url = await presignIncidentVideo(session.recording_storage_path, 3600);
     return reply.send({ url, sessionId });
   });
-
-const exportBodySchema = z.object({
-  title: z.string().max(500).optional(),
-});
-
-const configBodySchema = z.object({
-  captureIntervalMs: z.number().int().min(10_000).max(120_000).nullable().optional(),
-});
 
   app.post("/api/live/sessions/:sessionId/export-lesson", async (request, reply) => {
     if (!checkSecret(request.headers["x-backend-secret"])) {

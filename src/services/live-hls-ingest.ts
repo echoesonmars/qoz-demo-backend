@@ -2,7 +2,7 @@ import type { FastifyBaseLogger } from "fastify";
 import { getEnv } from "../config/env.js";
 import { withGeminiLiveSlot } from "./gemini-concurrency.js";
 import { analyzeLiveFrame } from "./gemini-live-frame.js";
-import { formatUserFacingGeminiError } from "./gemini-error-format.js";
+import { formatUserFacingLiveIngestError } from "./live-ingest-error-format.js";
 import { captureHlsFrameWithRetry } from "./live-hls-capture.js";
 import { recordGemini429, recordIngestTick } from "./live-metrics.js";
 import { buildMockLiveAnalysis } from "./live-mock-analysis.js";
@@ -11,8 +11,11 @@ import {
   setMonitorSessionError,
   touchMonitorSessionFrame,
 } from "./live-monitor-db.js";
-import type { LiveMonitorSessionRow } from "../types/live-analysis.js";
+import { liveCaptureIntervalMinFloorMs } from "./live-capture-interval-bounds.js";
+import type { LiveAnalysisPayload, LiveMonitorSessionRow } from "../types/live-analysis.js";
 import { stopSessionRecording } from "./live-session-recorder.js";
+import { analyzeLiveFrameWithVision } from "./vision-live-frame.js";
+import { withVisionLiveSlot } from "./vision-concurrency.js";
 
 const DEFAULT_INTERVAL_MS = 10_000;
 const MAX_CONSECUTIVE_FAILS = 5;
@@ -46,7 +49,14 @@ function shouldUseMock(): boolean {
   const env = getEnv();
   if (env.GEMINI_LIVE_MODE === "mock") return true;
   if (env.GEMINI_LIVE_MODE === "live") return false;
+  if (env.VISION_LIVE_MODE !== "off" && env.VISION_LIVE_URL.trim()) {
+    return false;
+  }
   return !env.GEMINI_API_KEY;
+}
+
+export function liveSnapshotEvidenceEnabled(): boolean {
+  return !shouldUseMock();
 }
 
 let intervalOverrideMs: number | null = null;
@@ -57,16 +67,18 @@ export function setCaptureIntervalOverride(ms: number | null): void {
     rescheduleAllIngestTimers();
     return;
   }
-  const clamped = Math.min(120_000, Math.max(10_000, Math.floor(ms)));
+  const floor = liveCaptureIntervalMinFloorMs();
+  const clamped = Math.min(120_000, Math.max(floor, Math.floor(ms)));
   intervalOverrideMs = clamped;
   rescheduleAllIngestTimers();
 }
 
 export function baseCaptureIntervalMs(): number {
   if (intervalOverrideMs != null) return intervalOverrideMs;
+  const floor = liveCaptureIntervalMinFloorMs();
   const raw = Number(process.env.LIVE_CAPTURE_INTERVAL_MS ?? DEFAULT_INTERVAL_MS);
-  if (!Number.isFinite(raw) || raw < 10_000) return DEFAULT_INTERVAL_MS;
-  return Math.min(raw, 120_000);
+  if (!Number.isFinite(raw)) return Math.max(DEFAULT_INTERVAL_MS, floor);
+  return Math.min(120_000, Math.max(floor, raw));
 }
 
 export function captureIntervalMs(): number {
@@ -98,35 +110,82 @@ async function runTick(
   const sessionOffsetSec = Math.floor(
     (started - new Date(session.started_at).getTime()) / 1000,
   );
+  let tickAnalysisSource: "mock" | "vision" | "gemini" | undefined;
+  let tickVisionMs: number | undefined;
 
   try {
-    let payload;
+    let payload: LiveAnalysisPayload | null = null;
     let frameJpeg: Buffer | null = null;
     const uploadEvidence = !shouldUseMock();
+
     if (shouldUseMock()) {
       payload = buildMockLiveAnalysis(handle.tick);
+      tickAnalysisSource = "mock";
     } else {
       frameJpeg = await captureHlsFrameWithRetry(session.hls_url, handle.abort.signal);
-      const analyzed = await withGeminiLiveSlot(() => analyzeLiveFrame(frameJpeg!));
-      if (!analyzed) {
-        handle.failStreak += 1;
-        log.warn({ sessionId: session.id, deviceId: session.device_id }, "live parse failed");
-        if (handle.failStreak >= MAX_CONSECUTIVE_FAILS) {
-          await setMonitorSessionError(
-            session.id,
-            "Слишком много ошибок анализа подряд",
+      const env = getEnv();
+      const visionMode = env.VISION_LIVE_MODE;
+
+      if (visionMode !== "off") {
+        const vStart = Date.now();
+        try {
+          const v = await withVisionLiveSlot(() =>
+            analyzeLiveFrameWithVision(frameJpeg!, handle.abort.signal, {
+              sessionId: session.id,
+              deviceId: session.device_id,
+            }),
           );
-          stopLiveIngest(session.device_id);
+          if (v) {
+            payload = v;
+            tickVisionMs = Date.now() - vStart;
+            tickAnalysisSource = "vision";
+          }
+        } catch (err) {
+          log.warn(
+            { err, sessionId: session.id, deviceId: session.device_id },
+            "vision live analyze failed",
+          );
+          if (visionMode === "live") {
+            throw err;
+          }
         }
-        recordIngestTick({
-          deviceId: session.device_id,
-          sessionId: session.id,
-          durationMs: Date.now() - started,
-          failStreak: handle.failStreak,
-        });
-        return;
       }
-      payload = analyzed;
+
+      if (!payload) {
+        if (visionMode === "live") {
+          handle.failStreak += 1;
+          log.warn(
+            { sessionId: session.id, deviceId: session.device_id },
+            "vision live: empty analysis result",
+          );
+          if (handle.failStreak >= MAX_CONSECUTIVE_FAILS) {
+            await setMonitorSessionError(
+              session.id,
+              "Слишком много ошибок анализа кадра подряд (vision)",
+            );
+            stopLiveIngest(session.device_id);
+          }
+          tickAnalysisSource = "vision";
+          return;
+        }
+
+        const analyzed = await withGeminiLiveSlot(() => analyzeLiveFrame(frameJpeg!));
+        if (!analyzed) {
+          handle.failStreak += 1;
+          log.warn({ sessionId: session.id, deviceId: session.device_id }, "live parse failed");
+          if (handle.failStreak >= MAX_CONSECUTIVE_FAILS) {
+            await setMonitorSessionError(
+              session.id,
+              "Слишком много ошибок анализа кадра подряд (Gemini)",
+            );
+            stopLiveIngest(session.device_id);
+          }
+          tickAnalysisSource = "gemini";
+          return;
+        }
+        payload = analyzed;
+        tickAnalysisSource = "gemini";
+      }
     }
 
     await insertLiveSnapshot({
@@ -147,17 +206,28 @@ async function runTick(
         deviceId: session.device_id,
         score: payload.analytics_meta.overall_engagement_score,
         incidents: payload.detected_incidents.length,
+        analysisSource: tickAnalysisSource,
+        visionDurationMs: tickVisionMs,
+        durationMs: Date.now() - started,
       },
       "live snapshot stored",
     );
   } catch (err) {
     handle.failStreak += 1;
-    const msg = formatUserFacingGeminiError(err);
+    const msg = formatUserFacingLiveIngestError(err);
     if (/429|RESOURCE_EXHAUSTED/i.test(msg)) {
       recordGemini429(session.device_id);
     }
     setIngestError(session.device_id, msg);
-    log.warn({ err, sessionId: session.id }, "live tick failed");
+    log.warn(
+      {
+        err,
+        sessionId: session.id,
+        deviceId: session.device_id,
+        durationMs: Date.now() - started,
+      },
+      "live tick failed",
+    );
     if (handle.failStreak >= MAX_CONSECUTIVE_FAILS) {
       await setMonitorSessionError(session.id, msg);
       stopLiveIngest(session.device_id);
@@ -168,6 +238,8 @@ async function runTick(
       sessionId: session.id,
       durationMs: Date.now() - started,
       failStreak: handle.failStreak,
+      analysisSource: tickAnalysisSource,
+      visionDurationMs: tickVisionMs,
     });
   }
 }

@@ -9,6 +9,7 @@ export type LiveHealthReport = {
   ffmpeg: { ok: boolean; detail: string };
   storage: { ok: boolean; detail: string };
   gemini: { ok: boolean; detail: string };
+  vision: { ok: boolean; detail: string };
   tmp: { ok: boolean; detail: string; freeBytes?: number };
 };
 
@@ -16,8 +17,9 @@ export async function checkLiveHealth(): Promise<LiveHealthReport> {
   const ffmpeg = await checkFfmpeg();
   const storage = await checkStorage();
   const gemini = checkGeminiConfigured();
+  const vision = await checkVisionReachable();
   const tmp = await checkTmpSpace();
-  return { ffmpeg, storage, gemini, tmp };
+  return { ffmpeg, storage, gemini, vision, tmp };
 }
 
 async function checkFfmpeg(): Promise<{ ok: boolean; detail: string }> {
@@ -54,10 +56,45 @@ function checkGeminiConfigured(): { ok: boolean; detail: string } {
   if (env.GEMINI_LIVE_MODE === "mock") {
     return { ok: true, detail: "mock mode" };
   }
+  if (env.VISION_LIVE_MODE === "live" && env.VISION_LIVE_URL.trim()) {
+    return { ok: true, detail: "snapshot analysis via qoz-vision (Gemini key optional)" };
+  }
+  if (env.VISION_LIVE_DRIVER === "on" && env.VISION_LIVE_URL.trim()) {
+    return { ok: true, detail: "vision live driver ingest (Gemini key optional)" };
+  }
   if (env.GEMINI_API_KEY?.trim()) {
     return { ok: true, detail: "API key set" };
   }
-  return { ok: false, detail: "GEMINI_API_KEY missing" };
+  return { ok: false, detail: "GEMINI_API_KEY missing for this mode" };
+}
+
+async function checkVisionReachable(): Promise<{ ok: boolean; detail: string }> {
+  const env = getEnv();
+  if (!env.VISION_LIVE_URL.trim()) {
+    return { ok: true, detail: "vision URL unset" };
+  }
+  if (env.VISION_LIVE_MODE === "off" && env.VISION_LIVE_DRIVER !== "on") {
+    return { ok: true, detail: "VISION_LIVE_URL set but ingest mode off and driver off" };
+  }
+  const base = env.VISION_LIVE_URL.trim().replace(/\/$/, "");
+  try {
+    const r = await fetch(`${base}/health`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!r.ok) {
+      return { ok: false, detail: `vision health HTTP ${r.status}` };
+    }
+    const j = (await r.json()) as { models_loaded?: boolean };
+    if (j.models_loaded === false) {
+      return { ok: false, detail: "qoz-vision models not loaded" };
+    }
+    return { ok: true, detail: "qoz-vision reachable" };
+  } catch (e) {
+    return {
+      ok: false,
+      detail: e instanceof Error ? e.message : "qoz-vision unreachable",
+    };
+  }
 }
 
 async function checkTmpSpace(): Promise<{ ok: boolean; detail: string; freeBytes?: number }> {

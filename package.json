@@ -7,7 +7,7 @@
     "dev": "tsx watch --env-file=.env src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "npm run build && node --test tests/live-upload-limits.test.mjs"
+    "test": "npm run build && node --test tests/live-upload-limits.test.mjs tests/vision-map-live-payload.test.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1048.0",
