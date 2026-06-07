@@ -1,7 +1,14 @@
-import { INCIDENT_CATEGORY_IDS } from "../constants/incident-categories.js";
+import { INCIDENT_CATEGORY_IDS, isIncidentCategoryId } from "../constants/incident-categories.js";
+import {
+  filterJournalIncidentsForCategory,
+  journalSummaryRowsFromIncidents,
+  listCompletedJournalIncidentsSince,
+  serializeJournalSituationItem,
+} from "./journal-incident-categories.js";
 import { getDb } from "./db.js";
 import { normalizeLiveIncidentType } from "./live-incident-normalize.js";
 import { LIVE_RETENTION_DAYS } from "./live-retention.js";
+import type { IncidentRow } from "../types/incidents.js";
 import type { LiveIncidentEventRow } from "../types/live-analysis.js";
 
 export type FleetCategoryStat = {
@@ -15,6 +22,23 @@ export type FleetIncidentWithSession = LiveIncidentEventRow & {
   session_status: string | null;
 };
 
+export type FleetSituationLiveRow = FleetIncidentWithSession & {
+  source: "live";
+  sortAt: Date;
+};
+
+export type FleetSituationJournalRow = IncidentRow & {
+  source: "journal";
+  sortAt: Date;
+};
+
+export type FleetSituationMergedRow = FleetSituationLiveRow | FleetSituationJournalRow;
+
+type SummaryRow = {
+  category: string;
+  capturedAt: Date;
+};
+
 export async function listFleetIncidentSummaryRows(
   since: Date,
 ): Promise<{ incident_type: string; captured_at: Date }[]> {
@@ -26,21 +50,30 @@ export async function listFleetIncidentSummaryRows(
   `;
 }
 
-export function buildFleetCategoryStats(
+function liveSummaryRows(
   rows: { incident_type: string; captured_at: Date }[],
-): FleetCategoryStat[] {
+): SummaryRow[] {
+  const out: SummaryRow[] = [];
+  for (const row of rows) {
+    const category = normalizeLiveIncidentType(row.incident_type);
+    if (!isIncidentCategoryId(category)) continue;
+    out.push({ category, capturedAt: row.captured_at });
+  }
+  return out;
+}
+
+export function buildFleetCategoryStats(rows: SummaryRow[]): FleetCategoryStat[] {
   const buckets = new Map<string, { count: number; lastAt: Date | null }>();
   for (const category of INCIDENT_CATEGORY_IDS) {
     buckets.set(category, { count: 0, lastAt: null });
   }
 
   for (const row of rows) {
-    const category = normalizeLiveIncidentType(row.incident_type);
-    if (!buckets.has(category)) continue;
-    const bucket = buckets.get(category)!;
+    if (!buckets.has(row.category)) continue;
+    const bucket = buckets.get(row.category)!;
     bucket.count += 1;
-    if (!bucket.lastAt || row.captured_at >= bucket.lastAt) {
-      bucket.lastAt = row.captured_at;
+    if (!bucket.lastAt || row.capturedAt >= bucket.lastAt) {
+      bucket.lastAt = row.capturedAt;
     }
   }
 
@@ -60,32 +93,75 @@ export async function getFleetSituationSummary(since: Date): Promise<{
   retentionDays: number;
   since: string;
 }> {
-  const rows = await listFleetIncidentSummaryRows(since);
+  const [liveRows, journalRows] = await Promise.all([
+    listFleetIncidentSummaryRows(since),
+    listCompletedJournalIncidentsSince(since),
+  ]);
+  const merged = [
+    ...liveSummaryRows(liveRows),
+    ...journalSummaryRowsFromIncidents(journalRows),
+  ];
   return {
-    stats: buildFleetCategoryStats(rows),
+    stats: buildFleetCategoryStats(merged),
     retentionDays: LIVE_RETENTION_DAYS,
     since: since.toISOString(),
   };
 }
 
-async function fetchFleetIncidentBatch(
+async function listAllLiveIncidentsForCategory(
   since: Date,
-  dbOffset: number,
-  batchSize: number,
-): Promise<FleetIncidentWithSession[]> {
-  const sql = getDb();
-  const rows = await sql<FleetIncidentWithSession[]>`
-    select
-      e.*,
-      s.status as session_status
-    from public.live_incident_events e
-    left join public.live_monitor_sessions s on s.id = e.session_id
-    where e.captured_at >= ${since}
-    order by e.captured_at desc
-    limit ${batchSize}
-    offset ${dbOffset}
-  `;
-  return rows;
+  category: string,
+): Promise<FleetSituationLiveRow[]> {
+  const batchSize = 500;
+  let dbOffset = 0;
+  const matched: FleetSituationLiveRow[] = [];
+
+  while (true) {
+    const sql = getDb();
+    const batch = await sql<FleetIncidentWithSession[]>`
+      select
+        e.*,
+        s.status as session_status
+      from public.live_incident_events e
+      left join public.live_monitor_sessions s on s.id = e.session_id
+      where e.captured_at >= ${since}
+      order by e.captured_at desc
+      limit ${batchSize}
+      offset ${dbOffset}
+    `;
+    if (batch.length === 0) break;
+
+    for (const row of batch) {
+      if (normalizeLiveIncidentType(row.incident_type) !== category) continue;
+      matched.push({
+        ...row,
+        source: "live",
+        sortAt: row.captured_at,
+      });
+    }
+
+    dbOffset += batch.length;
+    if (batch.length < batchSize) break;
+  }
+
+  return matched;
+}
+
+function listJournalRowsForCategory(
+  rows: IncidentRow[],
+  category: string,
+): FleetSituationJournalRow[] {
+  if (!isIncidentCategoryId(category)) return [];
+  const filtered = filterJournalIncidentsForCategory(rows, category);
+  return filtered.map((row) => {
+    const createdAt =
+      row.created_at instanceof Date ? row.created_at : new Date(row.created_at);
+    return {
+      ...row,
+      source: "journal",
+      sortAt: createdAt,
+    };
+  });
 }
 
 export async function listFleetIncidentsForCategory(input: {
@@ -94,39 +170,28 @@ export async function listFleetIncidentsForCategory(input: {
   limit: number;
   offset: number;
 }): Promise<{
-  rows: FleetIncidentWithSession[];
+  rows: FleetSituationMergedRow[];
+  total: number;
   hasMore: boolean;
 }> {
-  const batchSize = 250;
-  let dbOffset = 0;
-  let skipped = 0;
-  const matched: FleetIncidentWithSession[] = [];
-  let hasMore = false;
+  const [liveRows, journalRows] = await Promise.all([
+    listAllLiveIncidentsForCategory(input.since, input.category),
+    listCompletedJournalIncidentsSince(input.since),
+  ]);
 
-  while (matched.length < input.limit + 1) {
-    const batch = await fetchFleetIncidentBatch(input.since, dbOffset, batchSize);
-    if (batch.length === 0) break;
+  const merged = [...liveRows, ...listJournalRowsForCategory(journalRows, input.category)].sort(
+    (a, b) => b.sortAt.getTime() - a.sortAt.getTime(),
+  );
 
-    for (const row of batch) {
-      if (normalizeLiveIncidentType(row.incident_type) !== input.category) continue;
-      if (skipped < input.offset) {
-        skipped += 1;
-        continue;
-      }
-      matched.push(row);
-      if (matched.length > input.limit) {
-        hasMore = true;
-        break;
-      }
-    }
-
-    if (hasMore) break;
-    dbOffset += batch.length;
-    if (batch.length < batchSize) break;
-  }
+  const total = merged.length;
+  const page = merged.slice(input.offset, input.offset + input.limit);
+  const hasMore = input.offset + page.length < total;
 
   return {
-    rows: matched.slice(0, input.limit),
+    rows: page,
+    total,
     hasMore,
   };
 }
+
+export { serializeJournalSituationItem };
