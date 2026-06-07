@@ -46,7 +46,9 @@ import { assertJpegWithinLimit } from "../services/live-upload-limits.js";
 import {
   getFleetSituationSummary,
   listFleetIncidentsForCategory,
+  serializeJournalSituationItem,
   type FleetIncidentWithSession,
+  type FleetSituationMergedRow,
 } from "../services/live-fleet-situations.js";
 import { getLiveRetentionCutoff } from "../services/live-retention.js";
 import { isIncidentCategoryId } from "../constants/incident-categories.js";
@@ -159,9 +161,23 @@ async function serializeIncident(
 async function serializeFleetIncident(row: FleetIncidentWithSession) {
   const base = await serializeIncident(row, true);
   return {
+    source: "live" as const,
     ...base,
     sessionStatus: row.session_status,
   };
+}
+
+async function serializeFleetSituationItem(
+  row: FleetSituationMergedRow,
+  category: string,
+) {
+  if (row.source === "journal") {
+    if (!isIncidentCategoryId(category)) {
+      throw new Error("invalid category");
+    }
+    return serializeJournalSituationItem(row, category);
+  }
+  return serializeFleetIncident(row);
 }
 
 export async function liveSessionsRoutes(app: FastifyInstance) {
@@ -409,15 +425,15 @@ export async function liveSessionsRoutes(app: FastifyInstance) {
     const limit = Math.min(Math.max(Number(q.limit ?? 40), 1), 100);
     const offset = Math.max(Number(q.offset ?? 0), 0);
     const summary = await getFleetSituationSummary(since);
-    const stat = summary.stats.find((s) => s.category === category);
-    const total = stat?.count ?? 0;
-    const { rows, hasMore } = await listFleetIncidentsForCategory({
+    const { rows, total, hasMore } = await listFleetIncidentsForCategory({
       since,
       category,
       limit,
       offset,
     });
-    const incidents = await Promise.all(rows.map((row) => serializeFleetIncident(row)));
+    const incidents = await Promise.all(
+      rows.map((row) => serializeFleetSituationItem(row, category)),
+    );
     return reply.send({
       incidents,
       total,
