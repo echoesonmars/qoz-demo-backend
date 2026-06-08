@@ -34,7 +34,7 @@ WebSocket `/api/live` (оверлей Gemini) **не** заменяется эт
 | `VISION_LIVE_MODE` | `off` — только Gemini; `live` — только vision; `fallback` — vision, при сбое Gemini |
 | `VISION_LIVE_TIMEOUT_MS` | Таймаут HTTP к vision (по умолчанию 60000) |
 | `VISION_LIVE_MAX_RETRIES` | Повторы при сетевых сбоях |
-| `VISION_LIVE_MAX_CONCURRENT` | Одновременных исходящих запросов к vision (по умолчанию 4) |
+| `VISION_LIVE_MAX_CONCURRENT` | Одновременных исходящих запросов к vision (для ~4 GB VRAM: **1**) |
 | `VISION_INTERNAL_SECRET` | Если задан в vision и в backend — заголовок `X-Vision-Internal-Secret` |
 | `VISION_LIVE_DRIVER` | `off` — ffmpeg-снапшоты в Node как раньше; `on` — qoz-vision тянет HLS и пушит в backend (нужен тот же секрет, см. выше) |
 | `LIVE_CAPTURE_INTERVAL_MS` | Период **сохранённых в БД снапшотов** ingest (/ffmpeg или live-driver): от нижней границы **`LIVE_CAPTURE_MIN_INTERVAL_MS`** до 120 000 мс |
@@ -53,8 +53,14 @@ WebSocket `/api/live` (оверлей Gemini) **не** заменяется эт
 | `LIVE_DRIVER_ANALYZE_EVERY_DECODE` | `false` — анализ с частотой пушей; **`true`** — каждый декодированный кадр через модели (очень дорого), в БД пишется не чаще `interval` |
 | `LIVE_DRIVER_MIN_PUSH_GAP_MS` | Нижняя граница интервала пушей (совместить с backend) |
 | `LIVE_DRIVER_LOOP_YIELD_SEC` | Пауза в плотном цикле при `LIVE_DRIVER_ANALYZE_EVERY_DECODE=true` |
-| `STREAM_PROCESS_EVERY_NTH_FRAME`, `STREAM_AFTER_FRAME_SLEEP_SEC` | Как часто гонять YOLO/pose по кадрам из **непрерывного** потока |
+| `STREAM_PROCESS_EVERY_NTH_FRAME`, `STREAM_AFTER_FRAME_SLEEP_SEC` | Как часто гонять YOLO/pose по кадрам из **непрерывного** потока (demo: **5**) |
 | `STREAM_URLS` | Дополнительный список URL (можно засунуть HLS), сливается с `RTSP_URLS` |
+| `USE_BASE_DETECT` | `true` — yolo11m (person, phone, baggage) |
+| `ENABLED_MODELS` | Demo: `weapon,fire_smoke,fight,smoking` (heavy.pt) |
+| `SPECIALIZED_ROTATE_PER_FRAME` | `true` — 2 specialized/кадр (A: weapon+fire, B: fight+smoking) |
+| `VISION_FRAME_MAX_CONCURRENT` | Demo: **1** (нет параллельных analyze → OOM) |
+
+Эвристики (phone, sleep, crowd, fall, baggage) требуют стабильный **`X-Device-Id`** (или `cam:{id}` в RTSP) — отдельный debounce-state на камеру.
 
 ## Health и readiness
 
@@ -113,6 +119,10 @@ curl -sS -X POST "http://localhost:8000/api/analyze/frame" \
 ## Нагрузочный прогон (§12)
 
 Автотест в репозитории не гоняет N параллельных HLS-сессий. Рекомендация: поднять несколько live-сессий в демо или скриптом вызывать `/api/analyze/frame` с пакетом воркеров и следить за latency и 5xx.
+
+## Загрузка видео инцидентов (отдельно от live)
+
+`INCIDENT_ANALYZE_MODE` в backend: `vision` (YOLO) или `gemini`. При `vision` backend скачивает ролик; по умолчанию `INCIDENT_VISION_ALL_FRAMES=true` — ffmpeg отдаёт **каждый** кадр ролика (нативный FPS, `scale=640:480`). При `INCIDENT_VISION_ALL_FRAMES=false` — субсэмпл `INCIDENT_VISION_SAMPLE_FPS` (по умолчанию 1 кадр/с). `INCIDENT_VISION_MAX_FRAMES=0` — без лимита, `>0` — обрезка. Затем **последовательно** `POST /api/analyze/frame` с `X-Run-All-Specialized: 1` (все 9 спец-моделей на кадре). Агрегация с **severity weights** (weapon/fight выше fall). Temp-папка удаляется в `finally`. См. [LIVE_ANALYSIS_GEMINI_VS_PYTHON.md](../../docs/LIVE_ANALYSIS_GEMINI_VS_PYTHON.md).
 
 ## Дальнейшие шаги (§14, не входит в минимальный план A)
 

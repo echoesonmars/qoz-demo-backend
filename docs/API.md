@@ -86,11 +86,26 @@ Base URL: `https://<railway-host>` (локально `http://localhost:8080`)
 { "status": "ok", "lesson": { "id": "...", "status": "ready", "analysis": { ... } } }
 ```
 
-**Ошибки:** `401` секрет, `404` нет записи. При сбое Gemini запись в БД получает `status: failed` и `error_message`.
+**Ошибки:** `401` секрет, `404` нет записи. При сбое анализа запись в БД получает `status: failed` и `error_message`.
 
-Отчёт (`analysis` jsonb): `detected_language`, `lesson_overview`, `time_management`, `incidents_summary`, `timeline`. Язык текста определяется моделью по речи на видео (`kk` / `ru` / `en`).
+Отчёт (`analysis` jsonb): `detected_language`, `lesson_overview`, `time_management`, `incidents_summary`, `timeline`.
 
-Опционально: `GEMINI_LESSON_ANALYZE_MODEL`, `GEMINI_LESSON_ANALYZE_FALLBACK_MODELS` (иначе используются `GEMINI_ANALYZE_*`).
+### Режимы (`LESSON_ANALYZE_MODE`)
+
+| Режим | Поведение |
+|-------|-----------|
+| `gemini` (default) | Целое видео → Gemini Files API → JSON |
+| `pipeline` | ffmpeg (audio mono 16kHz + кадры) → Whisper stub + YOLO `/api/analyze/frame` → compiled log → Qwen stub (или live LLM) → JSON |
+
+Pipeline env: `LOCAL_WHISPER_URL`, `LOCAL_VISION_URL` (или `VISION_LIVE_URL`), `LOCAL_LLM_URL`, `LESSON_*_PLACEHOLDER=true` по умолчанию (без загрузки Whisper/Qwen весов).
+
+Статусы урока: `pending` → `processing` → `ready` | `failed`.
+
+### `POST /api/lessons/analyze/cancel`
+
+Останавливает активный job pipeline/Gemini (abort). Body: `{ "lessonId": "..." }`. Headers: `X-Backend-Secret`.
+
+Gemini-path: `GEMINI_LESSON_ANALYZE_MODEL`, `GEMINI_LESSON_ANALYZE_FALLBACK_MODELS` (иначе `GEMINI_ANALYZE_*`).
 
 ---
 

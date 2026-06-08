@@ -37,7 +37,7 @@ Env: `GEMINI_ANALYZE_MODEL=gemini-3.1-flash-lite`, `GEMINI_LIVE_MODEL=gemini-3.1
 
 Снимок JPEG с HLS по-прежнему берётся в этом бэкенде; разбор кадра может идти в сервис **[qoz-vision](../qoz-vision)** (`POST /api/analyze/frame`), ответ — сырой DTO, маппинг в `LiveAnalysisPayload` в Node (см. `src/services/vision-map-live-payload.ts`, `src/services/vision-live-frame.ts`).
 
-Подключение ingest: `live-hls-ingest.ts`; кратко Gemini vs Python: [LIVE_ANALYSIS_GEMINI_VS_PYTHON.md](../LIVE_ANALYSIS_GEMINI_VS_PYTHON.md), детали: [docs/VISION_LIVE.md](docs/VISION_LIVE.md).
+Подключение ingest: `live-hls-ingest.ts`; кратко Gemini vs Python: [LIVE_ANALYSIS_GEMINI_VS_PYTHON.md](../docs/LIVE_ANALYSIS_GEMINI_VS_PYTHON.md), детали: [docs/VISION_LIVE.md](docs/VISION_LIVE.md).
 
 ## Быстрый старт
 
