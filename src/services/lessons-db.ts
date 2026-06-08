@@ -57,6 +57,15 @@ export async function updateLessonAnalysis(
   };
 }
 
+export async function setLessonProcessing(id: string): Promise<void> {
+  const sql = getDb();
+  await sql`
+    update public.lesson_analyses
+    set status = 'processing', error_message = null
+    where id = ${id}
+  `;
+}
+
 export async function markLessonFailed(id: string, message: string): Promise<void> {
   const sql = getDb();
   await sql`

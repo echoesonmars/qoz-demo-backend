@@ -1,6 +1,6 @@
 export type LessonLanguage = "kk" | "ru" | "en";
 
-export type LessonStatus = "pending" | "ready" | "failed";
+export type LessonStatus = "pending" | "processing" | "ready" | "failed";
 
 export type LessonOverview = {
   duration: string;
