@@ -8,6 +8,7 @@ import { incidentsAnalyzeRoutes } from "./routes/incidents-analyze.js";
 import { lessonsAnalyzeRoutes } from "./routes/lessons-analyze.js";
 import { liveRoutes } from "./routes/live.js";
 import { liveSessionsRoutes } from "./routes/live-sessions.js";
+import { storageUploadRoutes } from "./routes/storage-upload.js";
 import { bootstrapLiveMonitoring } from "./services/live-session-bootstrap.js";
 import { checkLiveHealth } from "./services/live-health.js";
 
@@ -56,6 +57,7 @@ async function main() {
     await camerasInfrastructureRoutes(app);
     await liveRoutes(app);
     await liveSessionsRoutes(app);
+    await storageUploadRoutes(app);
     await bootstrapLiveMonitoring(app.log);
     apiReady = true;
     app.log.info("API routes registered");
