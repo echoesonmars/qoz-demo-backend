@@ -4,6 +4,7 @@ import { getEnv } from "../config/env.js";
 import { INCIDENT_CATEGORY_IDS } from "../constants/incident-categories.js";
 import { incidentAnalyzeSystemPrompt } from "../prompts/incident-analyze.js";
 import type { AnalyzeResult } from "../types/incidents.js";
+import { downloadVideo } from "./video-download.js";
 
 const analyzeSchema = z.object({
   category: z.enum(INCIDENT_CATEGORY_IDS),
@@ -40,21 +41,6 @@ function analyzeModels(): string[] {
     .map((m) => m.trim())
     .filter(Boolean);
   return [...new Set([env.GEMINI_ANALYZE_MODEL, ...fallbacks])];
-}
-
-async function downloadVideo(
-  videoUrl: string,
-): Promise<{ buffer: Buffer; mimeType: string }> {
-  const res = await fetch(videoUrl);
-  if (!res.ok) {
-    throw new Error(`Video download failed: HTTP ${res.status}`);
-  }
-  const mimeType = (res.headers.get("content-type") ?? "video/mp4").split(";")[0];
-  const buffer = Buffer.from(await res.arrayBuffer());
-  if (buffer.length === 0) {
-    throw new Error("Video download returned empty body");
-  }
-  return { buffer, mimeType };
 }
 
 async function uploadVideoToGemai(
@@ -109,7 +95,19 @@ async function generateAnalysis(
   if (!text) {
     throw new Error("Empty response from Gemini");
   }
-  return analyzeSchema.parse(JSON.parse(extractJson(text)));
+  const parsed = analyzeSchema.parse(JSON.parse(extractJson(text)));
+  return {
+    category: parsed.category,
+    confidence: parsed.confidence,
+    description: parsed.description,
+    categories: [
+      {
+        category: parsed.category,
+        confidence: parsed.confidence,
+        description: parsed.description,
+      },
+    ],
+  };
 }
 
 export async function analyzeIncidentVideo(videoUrl: string): Promise<AnalyzeResult> {
