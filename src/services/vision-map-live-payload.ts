@@ -1,49 +1,15 @@
 import type { IncidentCategoryId } from "../constants/incident-categories.js";
-import { isIncidentCategoryId } from "../constants/incident-categories.js";
 import { liveAnalysisPayloadSchema, type LiveAnalysisPayload } from "../types/live-analysis.js";
-import type { VisionFrameAction, VisionFrameAnalysisDto, VisionFrameDetection } from "../types/vision-frame-dto.js";
+import type { VisionFrameAnalysisDto } from "../types/vision-frame-dto.js";
+import {
+  INCIDENT_DESCRIPTION_RU,
+  mapActionToCategory,
+  mapDetectionToCategory,
+} from "./vision-incident-category-map.js";
 
 const TIMESTAMP_MARKER = "frame_static";
 const TARGET_LANG = "ru";
 const LOCATION_CTX = "кадр целиком";
-
-const QOZ_TO_CATEGORY: Record<string, IncidentCategoryId | null> = {
-  person: null,
-  phone_usage: "phone_usage",
-  lost_property: "lost_property",
-  crowd: "crowd",
-  fight: "fight",
-  weapon: "weapon",
-  fall: "fall",
-  smoking: "smoking",
-  sleep: "sleep",
-  fire: "fire",
-  smoke: "smoke",
-  fence_climbing: "fence_climbing",
-};
-
-const ACTION_TO_INCIDENT: Record<string, IncidentCategoryId> = {
-  fall: "fall",
-  sleeping: "sleep",
-  fight: "fight",
-  climbing_fence: "fence_climbing",
-};
-
-const INCIDENT_DESCRIPTION_RU: Record<IncidentCategoryId, string> = {
-  fight: "По оценке vision: возможна потасовка или тесный контакт нескольких людей.",
-  weapon: "По оценке vision: зафиксирован класс, связанный с оружием.",
-  fall: "По оценке vision: возможное падение человека.",
-  smoking: "По оценке vision: возможное курение.",
-  phone_usage: "По оценке vision: возможное использование телефона.",
-  sleep: "По оценке vision: возможный сон или сильная усталость позой.",
-  lost_property: "По оценке vision: неохваченный объект / багаж в кадре.",
-  crowd: "По оценке vision: скопление людей выше порога.",
-  wanted_person: "По данным vision этот тип не определяется.",
-  fence_climbing: "По оценке vision: возможное преодоление ограждения.",
-  anpr: "По данным vision этот тип не определяется.",
-  fire: "По оценке vision: возможный признак огня.",
-  smoke: "По оценке vision: возможный дым.",
-};
 
 function confidenceTier(score: number): "high" | "medium" | "low" {
   if (score >= 0.72) return "high";
@@ -55,21 +21,6 @@ function tierWeight(t: "high" | "medium" | "low"): number {
   if (t === "high") return 3;
   if (t === "medium") return 2;
   return 1;
-}
-
-function mapDetectionToCategory(d: VisionFrameDetection): IncidentCategoryId | null {
-  const key = (d.qoz_incident || d.label || "").trim();
-  if (QOZ_TO_CATEGORY[key] !== undefined) {
-    return QOZ_TO_CATEGORY[key];
-  }
-  if (isIncidentCategoryId(key)) {
-    return key;
-  }
-  return null;
-}
-
-function mapActionToCategory(a: VisionFrameAction): IncidentCategoryId | null {
-  return ACTION_TO_INCIDENT[a.type] ?? null;
 }
 
 function focusDescriptionRu(engagement: number): string {
@@ -129,9 +80,9 @@ export function mapVisionDtoToLivePayload(dto: VisionFrameAnalysisDto): LiveAnal
 
   const activePhoneUsers = dto.detections.filter((d) => mapDetectionToCategory(d) === "phone_usage").length;
 
+  const sleepingFromYolo = dto.detections.filter((d) => mapDetectionToCategory(d) === "sleep").length;
   const sleepingFromStats = dto.stats?.sleeping != null ? Math.round(dto.stats.sleeping) : 0;
-  const sleepingFromActions = dto.actions.filter((a) => a.type === "sleeping").length;
-  const sleepingCount = Math.max(sleepingFromStats, sleepingFromActions);
+  const sleepingCount = Math.max(sleepingFromYolo, sleepingFromStats);
 
   const raw: LiveAnalysisPayload = {
     analytics_meta: {

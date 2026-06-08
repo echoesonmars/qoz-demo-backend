@@ -1,8 +1,18 @@
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import { buildFfmpegHlsInput } from "./live-hls-url.js";
 
 const require = createRequire(import.meta.url);
+
+function isExecutable(filePath: string): boolean {
+  try {
+    fs.accessSync(filePath, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function captureTimeoutMs(): number {
   const raw = Number(process.env.LIVE_HLS_CAPTURE_TIMEOUT_MS ?? 45_000);
@@ -13,13 +23,29 @@ function captureTimeoutMs(): number {
 export function resolveFfmpegPath(): string {
   const fromEnv = process.env.FFMPEG_PATH?.trim();
   if (fromEnv) return fromEnv;
+  if (isExecutable("ffmpeg")) return "ffmpeg";
   try {
     const bundled = require("ffmpeg-static") as string | undefined;
-    if (bundled) return bundled;
+    if (bundled && isExecutable(bundled)) return bundled;
   } catch {
     return "ffmpeg";
   }
   return "ffmpeg";
+}
+
+export function resolveFfprobePath(): string {
+  const fromEnv = process.env.FFPROBE_PATH?.trim();
+  if (fromEnv) return fromEnv;
+  if (isExecutable("ffprobe")) return "ffprobe";
+  const ffmpeg = resolveFfmpegPath();
+  if (ffmpeg.endsWith("ffmpeg.exe")) {
+    const sibling = ffmpeg.replace(/ffmpeg\.exe$/i, "ffprobe.exe");
+    if (isExecutable(sibling)) return sibling;
+  } else if (ffmpeg.endsWith("ffmpeg")) {
+    const sibling = ffmpeg.replace(/ffmpeg$/i, "ffprobe");
+    if (isExecutable(sibling)) return sibling;
+  }
+  return "ffprobe";
 }
 
 function isTransientCaptureError(message: string): boolean {

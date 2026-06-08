@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 
 import { getEnv } from "../config/env.js";
 import type { LiveAnalysisPayload } from "../types/live-analysis.js";
-import { visionFrameAnalysisDtoSchema } from "../types/vision-frame-dto.js";
+import {
+  visionFrameAnalysisDtoSchema,
+  type VisionFrameAnalysisDto,
+} from "../types/vision-frame-dto.js";
 import { recordVisionHttpError } from "./live-metrics.js";
 import { formatUserFacingVisionError } from "./vision-error-format.js";
 import { mapVisionDtoToLivePayload } from "./vision-map-live-payload.js";
@@ -12,7 +15,14 @@ export type VisionFrameRequestContext = {
   deviceId?: string;
 };
 
-function visionBaseUrl(): string {
+export type PostVisionFrameOptions = {
+  baseUrl?: string;
+  runAllSpecialized?: boolean;
+};
+
+function resolveVisionBaseUrl(override?: string): string {
+  const trimmed = override?.trim();
+  if (trimmed) return trimmed.replace(/\/$/, "");
   return getEnv().VISION_LIVE_URL.trim().replace(/\/$/, "");
 }
 
@@ -24,22 +34,21 @@ function mergeSignal(timeoutMs: number, outer?: AbortSignal): AbortSignal {
   return AbortSignal.any([t, outer]);
 }
 
-export async function analyzeLiveFrameWithVision(
+export async function postVisionAnalyzeFrame(
   jpeg: Buffer,
   signal?: AbortSignal,
   ctx?: VisionFrameRequestContext,
-): Promise<LiveAnalysisPayload | null> {
+  options?: PostVisionFrameOptions,
+): Promise<VisionFrameAnalysisDto> {
   const env = getEnv();
-  if (env.VISION_LIVE_MODE === "off") {
-    return null;
-  }
-  const base = visionBaseUrl();
+  const base = resolveVisionBaseUrl(options?.baseUrl);
   if (!base) {
     throw new Error("VISION_LIVE_URL is not configured");
   }
 
   const url = `${base}/api/analyze/frame`;
   const retries = env.VISION_LIVE_MAX_RETRIES;
+  const runAll = options?.runAllSpecialized ?? true;
   let lastErr: unknown;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -53,6 +62,9 @@ export async function analyzeLiveFrameWithVision(
       }
       if (ctx?.deviceId) {
         headers["X-Device-Id"] = ctx.deviceId;
+      }
+      if (runAll) {
+        headers["X-Run-All-Specialized"] = "1";
       }
       const secret = env.VISION_INTERNAL_SECRET.trim();
       if (secret) {
@@ -74,8 +86,7 @@ export async function analyzeLiveFrameWithVision(
           status: res.status,
           durationMs: Date.now() - t0,
         });
-        const err = new Error(`vision HTTP ${res.status}: ${text.slice(0, 400)}`);
-        throw err;
+        throw new Error(`vision HTTP ${res.status}: ${text.slice(0, 400)}`);
       }
 
       const json: unknown = await res.json();
@@ -84,16 +95,7 @@ export async function analyzeLiveFrameWithVision(
         lastErr = new Error(`vision DTO: ${dtoParsed.error.message}`);
         continue;
       }
-
-      let payload: LiveAnalysisPayload;
-      try {
-        payload = mapVisionDtoToLivePayload(dtoParsed.data);
-      } catch (e) {
-        lastErr = e;
-        continue;
-      }
-
-      return payload;
+      return dtoParsed.data;
     } catch (e) {
       lastErr = e;
       if (attempt >= retries) {
@@ -106,9 +108,47 @@ export async function analyzeLiveFrameWithVision(
   if (lastErr) {
     throw new Error(formatUserFacingVisionError(lastErr));
   }
-  return null;
+  throw new Error("vision analyze failed");
+}
+
+export async function analyzeLiveFrameWithVision(
+  jpeg: Buffer,
+  signal?: AbortSignal,
+  ctx?: VisionFrameRequestContext,
+): Promise<LiveAnalysisPayload | null> {
+  const env = getEnv();
+  if (env.VISION_LIVE_MODE === "off") {
+    return null;
+  }
+  const base = resolveVisionBaseUrl();
+  if (!base) {
+    throw new Error("VISION_LIVE_URL is not configured");
+  }
+
+  let dto: VisionFrameAnalysisDto;
+  try {
+    dto = await postVisionAnalyzeFrame(jpeg, signal, ctx);
+  } catch (e) {
+    throw e;
+  }
+
+  try {
+    return mapVisionDtoToLivePayload(dto);
+  } catch (e) {
+    throw e instanceof Error ? e : new Error(String(e));
+  }
 }
 
 export function isVisionLiveEnabled(): boolean {
   return getEnv().VISION_LIVE_MODE !== "off" && getEnv().VISION_LIVE_URL.trim().length > 0;
+}
+
+export function isVisionUrlConfigured(): boolean {
+  const env = getEnv();
+  return (env.LOCAL_VISION_URL.trim() || env.VISION_LIVE_URL.trim()).length > 0;
+}
+
+export function resolveLessonVisionUrl(): string {
+  const env = getEnv();
+  return resolveVisionBaseUrl(env.LOCAL_VISION_URL.trim() || env.VISION_LIVE_URL.trim());
 }
